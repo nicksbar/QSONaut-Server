@@ -79,6 +79,7 @@ pub fn router() -> Router {
         .route("/api/v1/openapi.json", get(openapi))
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
     let (channel_messages, _) = tokio::sync::broadcast::channel(256);
     let state = AppState {

@@ -31,3 +31,31 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require unique migration versions
+        shell: bash
+        run: |
+          versions="$(find migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' \
+            | sed -E 's/^([0-9]+)_.*/\1/' \
+            | sort)"
+          duplicates="$(printf '%s\n' "$versions" | uniq -d)"
+          test -z "$duplicates"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build deployment image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: qsonaut-server:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

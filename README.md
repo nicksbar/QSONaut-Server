@@ -103,6 +103,11 @@ docker compose -f deploy/postgres-dev.compose.yaml down -v
 
 ### Build and deployment
 
+Source-based deployment instructions for Docker Compose, Proxmox, and native
+builds are in [docs/deployment.md](docs/deployment.md). The repository's
+`main` branch is the supported source of truth; a published container is
+optional.
+
 Build the complete service:
 
 ```bash
