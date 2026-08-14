@@ -1,19 +1,29 @@
 <script lang="ts">
   import { formatFrequency } from './api';
-  import type { QsoLog, Station } from './types';
-  let { stations, logs }: { stations: Station[]; logs: QsoLog[] } = $props();
+  import type { ChannelMessage, QsoLog, Station } from './types';
+  let { stations, logs, messages, refresh }: { stations: Station[]; logs: QsoLog[]; messages: ChannelMessage[]; refresh: () => Promise<void> } = $props();
 </script>
 
 <section>
-  <p class="eyebrow">QSONAUT / OPT-IN REMOTE STATE</p>
-  <h2>Connected stations</h2>
-  <p class="section-intro">QSONaut publishes this operational snapshot when its server connection and presence sharing are enabled. It is coordination data, never remote-control authority.</p>
+  <div class="section-head"><div><p class="eyebrow">QSONAUT / LIVE STATION NETWORK</p><h2>Connected stations</h2></div><button onclick={refresh}>REFRESH ACTIVITY</button></div>
+  <p class="section-intro">Live operator, station, frequency, band, and mode context shared by connected QSONaut clients.</p>
   {#if stations.length === 0}
-    <div class="empty-state shallow"><span>◌</span><h3>No station presence yet</h3><p>The server endpoint is ready; the QSONaut desktop publisher is the next client-side integration.</p></div>
+    <div class="empty-state shallow"><span>◌</span><h3>No station presence yet</h3><p>Connected QSONaut stations will appear here as operators come online.</p></div>
   {:else}
     <div class="station-grid">
       {#each stations as station}
-        <article class="station-card large"><i class:online={station.status === 'online'}></i><div><div class="detail-head"><b>{station.callsign} · {station.station_label || 'QSONaut'}</b><span class="pill">{station.status}</span></div><strong>{formatFrequency(station.frequency_hz)}</strong><p>{station.band || 'band unknown'} · {station.mode || 'mode unknown'} · {[station.radio_manufacturer, station.radio_model].filter(Boolean).join(' ') || 'radio not shared'}</p><small>{station.display_name} · QSONaut {station.qsonaut_version} · {station.platform} · seen {new Date(station.last_seen).toLocaleString()}</small></div></article>
+        <article class="station-card large"><i class:online={station.status === 'online'}></i><div><div class="detail-head"><b>{station.callsign} · {station.station_label || 'QSONaut'}</b><span class="pill">{station.status}</span></div><strong>{formatFrequency(station.frequency_hz)}</strong><p>{station.band || 'station band'} · {station.mode || 'station mode'} · {[station.radio_manufacturer, station.radio_model].filter(Boolean).join(' ') || 'QSONaut station'}</p><small>{station.display_name} · QSONaut {station.qsonaut_version} · {station.platform} · seen {new Date(station.last_seen).toLocaleString()}</small></div></article>
+      {/each}
+    </div>
+  {/if}
+
+  <div class="section-head"><div><p class="eyebrow">AUTOMATION / CHANNEL TRAFFIC</p><h2>Messages</h2></div><b>{messages.length} messages</b></div>
+  {#if messages.length === 0}
+    <div class="empty-state shallow"><span>›_</span><h3>No channel traffic yet</h3><p>Operator tools and permissioned automations can publish into shared channels.</p></div>
+  {:else}
+    <div class="station-grid">
+      {#each messages as message}
+        <article class="station-card large"><div><div class="detail-head"><b>#{message.channel} · {message.author_callsign}</b><small>{new Date(message.created_at).toLocaleString()}</small></div><p>{message.message}</p></div></article>
       {/each}
     </div>
   {/if}

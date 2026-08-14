@@ -13,9 +13,9 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use qsonaut_protocol::{
-    Club, ClubInput, ClubMembership, ClubMembershipInput, ContestTemplate, CurrentUser, Event,
-    EventInput, EventStatusInput, MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput,
-    QsoLog, QsoLogInput, StationPresence, StationPresenceInput,
+    ChannelMessage, Club, ClubInput, ClubMembership, ClubMembershipInput, ContestTemplate,
+    CurrentUser, Event, EventInput, EventStatusInput, MemberDetail, MemberInput, MemberUpdateInput,
+    PasswordResetInput, QsoLog, QsoLogInput, StationPresence, StationPresenceInput,
 };
 use uuid::Uuid;
 
@@ -278,6 +278,15 @@ pub(crate) async fn logs(
 ) -> HttpResult<Json<Vec<QsoLog>>> {
     require_admin(&state, &jar).await?;
     Ok(Json(state.store.qso_logs(500).await?))
+}
+
+#[utoipa::path(get, path = "/api/v1/channel-messages", tag = "activity", responses((status = 200, body = [ChannelMessage])))]
+pub(crate) async fn channel_messages(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<ChannelMessage>>> {
+    require_admin(&state, &jar).await?;
+    Ok(Json(state.store.channel_messages(200).await?))
 }
 
 #[utoipa::path(post, path = "/api/v1/logs", tag = "activity", request_body = QsoLogInput, responses((status = 200, body = QsoLog)))]

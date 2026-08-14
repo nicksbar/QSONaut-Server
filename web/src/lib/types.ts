@@ -92,3 +92,14 @@ export type QsoLog = {
   points: number;
   source: string;
 };
+
+export type ChannelMessage = {
+  id: string;
+  user_id: string;
+  author_callsign: string;
+  event_id: string | null;
+  channel: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};

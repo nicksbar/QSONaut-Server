@@ -10,11 +10,11 @@ use axum::{
     routing::{get, patch, post},
 };
 use qsonaut_protocol::{
-    API_VERSION, ApiError, BootstrapRequest, Club, ClubInput, ClubMembership, ClubMembershipInput,
-    ContestTemplate, Credentials, CurrentUser, DeviceCredentials, DeviceToken, Event, EventInput,
-    EventStatus, EventStatusInput, HealthResponse, MemberClubRole, MemberDetail, MemberInput,
-    MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo, ServiceStatus,
-    SetupStatus, StationPresence, StationPresenceInput,
+    API_VERSION, ApiError, BootstrapRequest, ChannelMessage, Club, ClubInput, ClubMembership,
+    ClubMembershipInput, ContestTemplate, Credentials, CurrentUser, DeviceCredentials, DeviceToken,
+    Event, EventInput, EventStatus, EventStatusInput, HealthResponse, MemberClubRole, MemberDetail,
+    MemberInput, MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo,
+    ServiceStatus, SetupStatus, StationPresence, StationPresenceInput,
 };
 use qsonaut_store::Store;
 use utoipa::OpenApi;
@@ -32,7 +32,7 @@ use utoipa::OpenApi;
         management::clubs, management::create_club,
         management::contest_templates,
         management::events, management::create_event, management::set_event_status,
-        management::stations, management::publish_station_presence,
+        management::stations, management::publish_station_presence, management::channel_messages,
         management::logs, management::collect_log
     ),
     components(schemas(
@@ -40,7 +40,7 @@ use utoipa::OpenApi;
         DeviceCredentials, DeviceToken,
         BootstrapRequest, CurrentUser, MemberInput, ClubMembership, ClubMembershipInput,
         MemberUpdateInput, PasswordResetInput, MemberClubRole, MemberDetail,
-        Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventStatusInput,
+        Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventStatusInput, ChannelMessage,
         StationPresence, StationPresenceInput, QsoLog, QsoLogInput
     )),
     tags(
@@ -56,6 +56,7 @@ struct ApiDoc;
 pub struct AppState {
     pub(crate) store: Store,
     pub(crate) secure_cookies: bool,
+    pub(crate) channel_messages: tokio::sync::broadcast::Sender<ChannelMessage>,
 }
 
 pub fn router() -> Router {
@@ -66,9 +67,11 @@ pub fn router() -> Router {
 }
 
 pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
+    let (channel_messages, _) = tokio::sync::broadcast::channel(256);
     let state = AppState {
         store,
         secure_cookies,
+        channel_messages,
     };
     let management = Router::<AppState>::new()
         .route(
@@ -120,6 +123,10 @@ pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
             get(management::contest_templates),
         )
         .route("/api/v1/stations", get(management::stations))
+        .route(
+            "/api/v1/channel-messages",
+            get(management::channel_messages),
+        )
         .route(
             "/api/v1/stations/presence",
             axum::routing::put(management::publish_station_presence),
@@ -249,6 +256,7 @@ mod tests {
             "/api/v1/events",
             "/api/v1/events/{event_id}/status",
             "/api/v1/stations",
+            "/api/v1/channel-messages",
             "/api/v1/stations/presence",
             "/api/v1/logs",
         ] {

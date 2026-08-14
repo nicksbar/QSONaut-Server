@@ -3,8 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use qsonaut_protocol::{
-    Club, ClubInput, ClubMembership, ContestTemplate, CurrentUser, Event, EventInput, EventStatus,
-    MemberClubRole, QsoLog, QsoLogInput, StationPresence, StationPresenceInput,
+    ChannelMessage, ChannelMessageInput, Club, ClubInput, ClubMembership, ContestTemplate,
+    CurrentUser, Event, EventInput, EventStatus, MemberClubRole, QsoLog, QsoLogInput,
+    StationPresence, StationPresenceInput,
 };
 use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -109,6 +110,33 @@ struct QsoLogRow {
     exchange: Value,
     points: i32,
     source: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ChannelMessageRow {
+    id: Uuid,
+    user_id: Uuid,
+    author_callsign: String,
+    event_id: Option<Uuid>,
+    channel: String,
+    message: String,
+    metadata: Value,
+    created_at: DateTime<Utc>,
+}
+
+impl From<ChannelMessageRow> for ChannelMessage {
+    fn from(row: ChannelMessageRow) -> Self {
+        Self {
+            id: row.id,
+            user_id: row.user_id,
+            author_callsign: row.author_callsign,
+            event_id: row.event_id,
+            channel: row.channel,
+            message: row.message,
+            metadata: row.metadata,
+            created_at: row.created_at,
+        }
+    }
 }
 
 impl From<QsoLogRow> for QsoLog {
@@ -603,5 +631,31 @@ impl Store {
             .bind(id).bind(user_id).bind(input.event_id).bind(input.idempotency_key).bind(input.callsign.trim().to_ascii_uppercase()).bind(input.band.trim()).bind(input.mode.trim().to_ascii_uppercase()).bind(input.frequency_hz).bind(input.occurred_at).bind(input.rst_sent.as_deref()).bind(input.rst_received.as_deref()).bind(&input.exchange).bind(input.points).bind(input.source.trim()).execute(&self.pool).await?;
         sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1")
             .bind(id).fetch_one(&self.pool).await.map(QsoLog::from)
+    }
+
+    pub async fn channel_messages(&self, limit: i64) -> Result<Vec<ChannelMessage>, sqlx::Error> {
+        sqlx::query_as::<_, ChannelMessageRow>("SELECT m.id, m.user_id, u.callsign AS author_callsign, m.event_id, m.channel, m.message, m.metadata, m.created_at FROM channel_messages m JOIN users u ON u.id=m.user_id ORDER BY m.created_at DESC LIMIT $1")
+            .bind(limit.clamp(1, 500))
+            .fetch_all(&self.pool)
+            .await
+            .map(|rows| rows.into_iter().map(ChannelMessage::from).collect())
+    }
+
+    pub async fn create_channel_message(
+        &self,
+        user_id: Uuid,
+        input: &ChannelMessageInput,
+    ) -> Result<ChannelMessage, sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query_as::<_, ChannelMessageRow>("WITH inserted AS (INSERT INTO channel_messages (id,user_id,event_id,channel,message,metadata) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,user_id,event_id,channel,message,metadata,created_at) SELECT i.id,i.user_id,u.callsign AS author_callsign,i.event_id,i.channel,i.message,i.metadata,i.created_at FROM inserted i JOIN users u ON u.id=i.user_id")
+            .bind(id)
+            .bind(user_id)
+            .bind(input.event_id)
+            .bind(input.channel.trim())
+            .bind(input.message.trim())
+            .bind(&input.metadata)
+            .fetch_one(&self.pool)
+            .await
+            .map(ChannelMessage::from)
     }
 }

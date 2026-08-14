@@ -91,6 +91,8 @@ pub(crate) async fn device_login(
         expires_at,
         scopes: vec![
             "events:read".to_owned(),
+            "messages:read".to_owned(),
+            "messages:write".to_owned(),
             "presence:write".to_owned(),
             "logs:write".to_owned(),
         ],

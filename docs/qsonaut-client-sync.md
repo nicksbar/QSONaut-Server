@@ -1,6 +1,6 @@
 # QSONaut client synchronization
 
-The management server now has persistence and management views for two kinds of explicitly published QSONaut activity. The QSONaut desktop-side publisher is a separate integration and is not yet enabled by these server changes alone.
+The management server persists and presents explicitly published QSONaut station activity, QSO records, and shared automation-channel traffic.
 
 ## Station presence
 
@@ -22,16 +22,25 @@ is stored only as a SHA-256 hash by the server. Password resets revoke all
 browser sessions and device tokens for that operator. A client can revoke its
 current token with `DELETE /api/v1/auth/device`.
 
-The token has the fixed `events:read`, `presence:write`, and `logs:write`
-capabilities. Browser cookies are never copied into QSONaut configuration.
+The token has fixed `events:read`, `presence:write`, `logs:write`,
+`messages:read`, and `messages:write` capabilities. Browser cookies are never
+copied into QSONaut configuration.
+
+## Shared channels
+
+Authenticated native clients can publish bounded text messages to named
+channels over the WebSocket. The server records the authenticated author,
+persists the message, includes recent traffic in snapshots, and broadcasts new
+messages to connected clients. The management Activity view displays the most
+recent 200 messages alongside station presence and collected logs.
 
 ## WebSocket transport
 
 QSONaut connects to `GET /api/v1/ws` using the `qsonaut.v1` subprotocol and an
 `Authorization: Bearer ...` header. Messages use versioned JSON envelopes with
 client-generated event UUIDs. The current message set provides event/catalog
-snapshots, presence publication, idempotent QSO submission, acknowledgements,
-and heartbeats.
+snapshots, presence publication, idempotent QSO submission, shared-channel
+publication and broadcast, acknowledgements, and heartbeats.
 
 This is an ordinary HTTP WebSocket upgrade. A hosted deployment exposes only
 HTTPS/WSS on port 443; the reverse proxy forwards `/api/v1/ws` to the same

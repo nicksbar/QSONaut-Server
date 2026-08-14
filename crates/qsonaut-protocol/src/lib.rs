@@ -285,6 +285,27 @@ pub struct QsoLogInput {
     pub source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ChannelMessage {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub author_callsign: String,
+    pub event_id: Option<Uuid>,
+    pub channel: String,
+    pub message: String,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ChannelMessageInput {
+    pub event_id: Option<Uuid>,
+    pub channel: String,
+    pub message: String,
+    #[serde(default = "default_json_object")]
+    pub metadata: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientEnvelope {
     pub protocol_version: String,
@@ -300,6 +321,7 @@ pub enum ClientMessage {
     Sync,
     Presence(StationPresenceInput),
     Log(QsoLogInput),
+    ChannelMessage(ChannelMessageInput),
     Ping,
 }
 
@@ -320,9 +342,12 @@ pub enum ServerMessage {
     Snapshot {
         events: Vec<Event>,
         contest_templates: Vec<ContestTemplate>,
+        channel_messages: Vec<ChannelMessage>,
     },
     PresenceAccepted(StationPresence),
     LogAccepted(QsoLog),
+    ChannelMessageAccepted(ChannelMessage),
+    ChannelMessagePublished(ChannelMessage),
     Ack,
     Pong,
     Error {

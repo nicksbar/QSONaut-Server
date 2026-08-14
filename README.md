@@ -2,22 +2,17 @@
 
 QSONaut Server is the independent coordination service for QSONaut operators,
 clubs, and group events. It provides management, synchronization, reporting,
-chat, and protocol-integration services while leaving radio operation in the
-native QSONaut application.
+shared channels, and protocol-integration services to native QSONaut clients.
 
-## Product boundary
+## Capabilities
 
-The server owns:
+The server provides:
 
 - authentication and authorization;
 - clubs, members, events, and contest configuration;
-- synchronized QSO records, presence, chat, and reports;
+- synchronized QSO records, live station presence, shared channels, and reports;
 - N3FJP-compatible integration;
 - the management web console.
-
-The server does **not** own radio control, DSP, decoding, audio, PTT, transmit
-scheduling, or QSO automation. Those remain local to QSONaut. Connecting a
-QSONaut installation to this service is always optional.
 
 See [docs/scope.md](docs/scope.md), [docs/architecture.md](docs/architecture.md),
 the [QSONaut client synchronization boundary](docs/qsonaut-client-sync.md), and

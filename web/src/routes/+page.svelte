@@ -5,7 +5,7 @@
   import EventsPanel from '$lib/EventsPanel.svelte';
   import MembersPanel from '$lib/MembersPanel.svelte';
   import { api } from '$lib/api';
-  import type { Club, ContestTemplate, Event, QsoLog, Station, User } from '$lib/types';
+  import type { ChannelMessage, Club, ContestTemplate, Event, QsoLog, Station, User } from '$lib/types';
 
   type Phase = 'loading' | 'setup' | 'login' | 'ready';
   type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'activity';
@@ -24,15 +24,17 @@
   let templates = $state<ContestTemplate[]>([]);
   let stations = $state<Station[]>([]);
   let logs = $state<QsoLog[]>([]);
+  let messages = $state<ChannelMessage[]>([]);
 
   async function load() {
-    [clubs, members, events, templates, stations, logs] = await Promise.all([
+    [clubs, members, events, templates, stations, logs, messages] = await Promise.all([
       api<Club[]>('/api/v1/clubs'),
       api<User[]>('/api/v1/members'),
       api<Event[]>('/api/v1/events'),
       api<ContestTemplate[]>('/api/v1/contest-templates'),
       api<Station[]>('/api/v1/stations'),
       api<QsoLog[]>('/api/v1/logs'),
+      api<ChannelMessage[]>('/api/v1/channel-messages'),
     ]);
   }
 
@@ -103,12 +105,12 @@
         <p class="eyebrow amber">CONTROL PLANE / ONLINE</p>
         <h2 class="hero">{events.filter((event) => event.status === 'active').length} active operations</h2>
         <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{members.length}</b>OPERATORS</article><article><b>{stations.filter((station) => station.status === 'online').length}</b>ONLINE</article><article><b>{logs.length}</b>LOGS</article></div>
-        <div class="boundary"><b>Management and coordination live here.</b><p>Radio control, decoding, audio, PTT, and operating workflows remain in QSONaut.</p></div>
+        <div class="boundary"><b>One home for group operations.</b><p>Configure contests, coordinate operators, follow station activity, collect logs, and build club reports.</p></div>
       {:else if tab === 'clubs'}<ClubsPanel {clubs} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} refresh={load} />
       {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
-      {:else}<ActivityPanel {stations} {logs} />{/if}
+      {:else}<ActivityPanel {stations} {logs} {messages} refresh={load} />{/if}
     </main>
-    <footer class="mono">MANAGEMENT ONLY <span>NO RADIO CONTROL · NO AUDIO · NO PTT · NO MODEM</span></footer>
+    <footer class="mono">QSONAUT SERVER <span>CLUBS · CONTESTS · LIVE STATIONS · SHARED LOGS</span></footer>
   </div>
 {/if}

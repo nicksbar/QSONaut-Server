@@ -28,6 +28,7 @@ pub(crate) async fn connect(
 }
 
 async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser) {
+    let mut channel_messages = state.channel_messages.subscribe();
     if send(
         &mut socket,
         ServerEnvelope {
@@ -42,7 +43,33 @@ async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser) {
         return;
     }
 
-    while let Some(Ok(message)) = socket.recv().await {
+    loop {
+        let message = tokio::select! {
+            incoming = socket.recv() => match incoming {
+                Some(Ok(message)) => message,
+                _ => break,
+            },
+            published = channel_messages.recv() => match published {
+                Ok(message) => {
+                    if send(
+                        &mut socket,
+                        ServerEnvelope {
+                            protocol_version: API_VERSION.to_owned(),
+                            event_id: uuid::Uuid::new_v4(),
+                            message: ServerMessage::ChannelMessagePublished(message),
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        };
         let Message::Text(text) = message else {
             if matches!(message, Message::Close(_)) {
                 break;
@@ -106,9 +133,15 @@ async fn handle_message(
                 .contest_templates()
                 .await
                 .map_err(|error| internal_error(&error))?;
+            let channel_messages = state
+                .store
+                .channel_messages(200)
+                .await
+                .map_err(|error| internal_error(&error))?;
             Ok(ServerMessage::Snapshot {
                 events,
                 contest_templates,
+                channel_messages,
             })
         }
         ClientMessage::Presence(input) => {
@@ -135,8 +168,31 @@ async fn handle_message(
                     }
                 })
         }
+        ClientMessage::ChannelMessage(input) => {
+            validate_channel_message(&input)?;
+            let message = state
+                .store
+                .create_channel_message(user.id, &input)
+                .await
+                .map_err(|error| internal_error(&error))?;
+            let _ = state.channel_messages.send(message.clone());
+            Ok(ServerMessage::ChannelMessageAccepted(message))
+        }
         ClientMessage::Ping => Ok(ServerMessage::Pong),
     }
+}
+
+fn validate_channel_message(input: &qsonaut_protocol::ChannelMessageInput) -> Result<(), String> {
+    if input.channel.trim().is_empty() || input.channel.trim().len() > 80 {
+        return Err("channel must contain 1 to 80 characters".to_owned());
+    }
+    if input.message.trim().is_empty() || input.message.trim().len() > 2_000 {
+        return Err("message must contain 1 to 2000 characters".to_owned());
+    }
+    if !input.metadata.is_object() || input.metadata.to_string().len() > 8_192 {
+        return Err("message metadata must be an object no larger than 8 KiB".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_presence(input: &StationPresenceInput) -> Result<(), String> {
@@ -234,5 +290,23 @@ mod tests {
         assert!(validate_presence(&input).is_ok());
         input.metadata = serde_json::json!({ "data": "x".repeat(8_192) });
         assert!(validate_presence(&input).is_err());
+    }
+
+    #[test]
+    fn shared_channel_messages_are_bounded() {
+        let valid = qsonaut_protocol::ChannelMessageInput {
+            event_id: None,
+            channel: "ops".to_owned(),
+            message: "Band opening on 20m".to_owned(),
+            metadata: serde_json::json!({}),
+        };
+        assert!(validate_channel_message(&valid).is_ok());
+
+        let mut invalid = valid;
+        invalid.message = "x".repeat(2_001);
+        assert_eq!(
+            validate_channel_message(&invalid).unwrap_err(),
+            "message must contain 1 to 2000 characters"
+        );
     }
 }
