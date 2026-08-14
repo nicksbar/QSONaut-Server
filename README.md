@@ -9,7 +9,7 @@ shared channels, and protocol-integration services to native QSONaut clients.
 The server provides:
 
 - authentication and authorization;
-- clubs, members, events, and contest configuration;
+- club rosters, join approvals, renewals, governance, elections, events, and contest configuration;
 - synchronized QSO records, live station presence, shared channels, and reports;
 - N3FJP-compatible integration;
 - the management web console.
@@ -17,6 +17,8 @@ The server provides:
 See [docs/scope.md](docs/scope.md), [docs/architecture.md](docs/architecture.md),
 the [QSONaut client synchronization boundary](docs/qsonaut-client-sync.md), and
 the future opt-in [diagnostic bundle design](docs/diagnostic-bundles.md).
+Club ownership, roster lifecycle, and election scheduling are described in
+[docs/club-operations.md](docs/club-operations.md).
 
 Native QSONaut clients connect through the same HTTPS endpoint as the web UI.
 The `/api/v1/ws` route uses a standard WebSocket upgrade, so a reverse proxy can

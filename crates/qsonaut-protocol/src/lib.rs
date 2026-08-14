@@ -2,7 +2,7 @@
 //!
 //! Persistence records and server implementation details do not belong here.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -110,12 +110,49 @@ pub struct ClubMembership {
     pub callsign: String,
     pub display_name: String,
     pub role: String,
+    pub membership_status: String,
+    pub dues_status: String,
+    pub membership_number: Option<String>,
+    pub renewal_due_on: Option<NaiveDate>,
+    pub joined_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ClubMembershipInput {
     pub user_id: Uuid,
     pub role: String,
+    #[serde(default)]
+    pub membership_status: Option<String>,
+    #[serde(default)]
+    pub dues_status: Option<String>,
+    #[serde(default)]
+    pub membership_number: Option<String>,
+    #[serde(default)]
+    pub renewal_due_on: Option<NaiveDate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubJoinRequest {
+    pub id: Uuid,
+    pub club_id: Uuid,
+    pub user_id: Uuid,
+    pub callsign: String,
+    pub display_name: String,
+    pub status: String,
+    pub requested_at: DateTime<Utc>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+    pub reviewed_by: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubJoinDecisionInput {
+    pub decision: String,
+    #[serde(default = "default_operator_role")]
+    pub role: String,
+}
+
+fn default_operator_role() -> String {
+    "operator".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -124,6 +161,11 @@ pub struct Club {
     pub name: String,
     pub callsign: Option<String>,
     pub description: String,
+    pub member_count: i64,
+    pub renewal_attention_count: i64,
+    pub my_role: Option<String>,
+    pub join_request_status: Option<String>,
+    pub can_manage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -132,6 +174,95 @@ pub struct ClubInput {
     pub callsign: Option<String>,
     #[serde(default)]
     pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubPosition {
+    pub id: Uuid,
+    pub club_id: Uuid,
+    pub name: String,
+    pub position_type: String,
+    pub seats: i32,
+    pub term_years: i32,
+    pub election_parity: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubPositionInput {
+    pub name: String,
+    pub position_type: String,
+    pub seats: i32,
+    pub term_years: i32,
+    pub election_parity: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubPositionAssignment {
+    pub id: Uuid,
+    pub position_id: Uuid,
+    pub user_id: Uuid,
+    pub callsign: String,
+    pub display_name: String,
+    pub seat_number: i32,
+    pub starts_on: NaiveDate,
+    pub ends_on: NaiveDate,
+    pub selection_method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubPositionAssignmentInput {
+    pub position_id: Uuid,
+    pub user_id: Uuid,
+    pub seat_number: i32,
+    pub starts_on: NaiveDate,
+    pub ends_on: NaiveDate,
+    pub selection_method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubElection {
+    pub id: Uuid,
+    pub club_id: Uuid,
+    pub title: String,
+    pub election_year: i32,
+    pub status: String,
+    pub opens_at: Option<DateTime<Utc>>,
+    pub closes_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub position_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubElectionInput {
+    pub title: String,
+    pub election_year: i32,
+    #[serde(default = "default_election_status")]
+    pub status: String,
+    pub opens_at: Option<DateTime<Utc>>,
+    pub closes_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub position_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubElectionStatusInput {
+    pub status: String,
+}
+
+fn default_election_status() -> String {
+    "planned".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClubGovernance {
+    pub positions: Vec<ClubPosition>,
+    pub assignments: Vec<ClubPositionAssignment>,
+    pub elections: Vec<ClubElection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

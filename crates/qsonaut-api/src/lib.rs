@@ -10,11 +10,14 @@ use axum::{
     routing::{get, patch, post},
 };
 use qsonaut_protocol::{
-    API_VERSION, ApiError, BootstrapRequest, ChannelMessage, Club, ClubInput, ClubMembership,
-    ClubMembershipInput, ContestTemplate, Credentials, CurrentUser, DeviceCredentials, DeviceToken,
-    Event, EventInput, EventStatus, EventStatusInput, HealthResponse, MemberClubRole, MemberDetail,
-    MemberInput, MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo,
-    ServiceStatus, SetupStatus, StationPresence, StationPresenceInput,
+    API_VERSION, ApiError, BootstrapRequest, ChannelMessage, Club, ClubElection, ClubElectionInput,
+    ClubElectionStatusInput, ClubGovernance, ClubInput, ClubJoinDecisionInput, ClubJoinRequest,
+    ClubMembership, ClubMembershipInput, ClubPosition, ClubPositionAssignment,
+    ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate, Credentials, CurrentUser,
+    DeviceCredentials, DeviceToken, Event, EventInput, EventStatus, EventStatusInput,
+    HealthResponse, MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput,
+    PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo, ServiceStatus, SetupStatus,
+    StationPresence, StationPresenceInput,
 };
 use qsonaut_store::Store;
 use utoipa::OpenApi;
@@ -29,6 +32,11 @@ use utoipa::OpenApi;
         management::member_detail, management::update_member, management::reset_member_password,
         management::club_members, management::set_club_member,
         management::remove_club_member,
+        management::request_club_join, management::club_join_requests,
+        management::review_club_join_request,
+        management::club_governance, management::create_club_position,
+        management::assign_club_position, management::create_club_election,
+        management::set_club_election_status,
         management::clubs, management::create_club,
         management::contest_templates,
         management::events, management::create_event, management::set_event_status,
@@ -39,6 +47,10 @@ use utoipa::OpenApi;
         HealthResponse, ServiceInfo, ServiceStatus, ApiError, SetupStatus, Credentials,
         DeviceCredentials, DeviceToken,
         BootstrapRequest, CurrentUser, MemberInput, ClubMembership, ClubMembershipInput,
+        ClubJoinRequest, ClubJoinDecisionInput,
+        ClubGovernance, ClubPosition, ClubPositionInput,
+        ClubPositionAssignment, ClubPositionAssignmentInput, ClubElection, ClubElectionInput,
+        ClubElectionStatusInput,
         MemberUpdateInput, PasswordResetInput, MemberClubRole, MemberDetail,
         Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventStatusInput, ChannelMessage,
         StationPresence, StationPresenceInput, QsoLog, QsoLogInput
@@ -117,6 +129,34 @@ pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
         .route(
             "/api/v1/clubs/{club_id}/members/{member_id}",
             axum::routing::delete(management::remove_club_member),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/join-requests",
+            get(management::club_join_requests).post(management::request_club_join),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/join-requests/{request_id}",
+            patch(management::review_club_join_request),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/governance",
+            get(management::club_governance),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/positions",
+            post(management::create_club_position),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/position-assignments",
+            post(management::assign_club_position),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/elections",
+            post(management::create_club_election),
+        )
+        .route(
+            "/api/v1/clubs/{club_id}/elections/{election_id}",
+            patch(management::set_club_election_status),
         )
         .route(
             "/api/v1/contest-templates",
@@ -252,6 +292,13 @@ mod tests {
             "/api/v1/members",
             "/api/v1/members/{member_id}",
             "/api/v1/clubs/{club_id}/members/{member_id}",
+            "/api/v1/clubs/{club_id}/join-requests",
+            "/api/v1/clubs/{club_id}/join-requests/{request_id}",
+            "/api/v1/clubs/{club_id}/governance",
+            "/api/v1/clubs/{club_id}/positions",
+            "/api/v1/clubs/{club_id}/position-assignments",
+            "/api/v1/clubs/{club_id}/elections",
+            "/api/v1/clubs/{club_id}/elections/{election_id}",
             "/api/v1/contest-templates",
             "/api/v1/events",
             "/api/v1/events/{event_id}/status",

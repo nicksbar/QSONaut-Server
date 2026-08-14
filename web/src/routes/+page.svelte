@@ -27,15 +27,17 @@
   let messages = $state<ChannelMessage[]>([]);
 
   async function load() {
-    [clubs, members, events, templates, stations, logs, messages] = await Promise.all([
+    [clubs, events, templates] = await Promise.all([
       api<Club[]>('/api/v1/clubs'),
-      api<User[]>('/api/v1/members'),
       api<Event[]>('/api/v1/events'),
       api<ContestTemplate[]>('/api/v1/contest-templates'),
-      api<Station[]>('/api/v1/stations'),
-      api<QsoLog[]>('/api/v1/logs'),
-      api<ChannelMessage[]>('/api/v1/channel-messages'),
     ]);
+    if (user?.global_role === 'administrator') {
+      [members, stations, logs, messages] = await Promise.all([
+        api<User[]>('/api/v1/members'), api<Station[]>('/api/v1/stations'),
+        api<QsoLog[]>('/api/v1/logs'), api<ChannelMessage[]>('/api/v1/channel-messages'),
+      ]);
+    } else { members = []; stations = []; logs = []; messages = []; }
   }
 
   async function initialize() {
@@ -43,10 +45,6 @@
       const setup = await api<{ setup_required: boolean }>('/api/v1/auth/setup');
       if (setup.setup_required) { phase = 'setup'; return; }
       const current = await api<User>('/api/v1/auth/me');
-      if (current.global_role !== 'administrator') {
-        await api('/api/v1/auth/logout', { method: 'POST' });
-        phase = 'login'; return;
-      }
       user = current; phase = 'ready'; await load();
     } catch { phase = 'login'; }
   }
@@ -61,10 +59,6 @@
           ? { callsign, display_name: displayName, password }
           : { callsign, password }),
       });
-      if (current.global_role !== 'administrator') {
-        await api('/api/v1/auth/logout', { method: 'POST' });
-        throw new Error('The web console requires administrator access. Use QSONaut for event activity.');
-      }
       user = current; password = ''; phase = 'ready'; await load();
     } catch (cause) { error = (cause as Error).message; } finally { busy = false; }
   }
@@ -98,15 +92,15 @@
 {:else}
   <div class="shell">
     <header><div><p class="eyebrow cyan">QSONAUT / GROUP OPERATIONS</p><h1>Command registry</h1></div><div class="operator"><i></i><b>{user?.callsign}</b><button onclick={logout}>SIGN OUT</button></div></header>
-    <nav>{#each ['overview','clubs','members','events','activity'] as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item}</button>{/each}</nav>
+    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity'] : ['overview','clubs']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item}</button>{/each}</nav>
     {#if error}<p class="error banner">{error}</p>{/if}
     <main>
       {#if tab === 'overview'}
         <p class="eyebrow amber">CONTROL PLANE / ONLINE</p>
         <h2 class="hero">{events.filter((event) => event.status === 'active').length} active operations</h2>
-        <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{members.length}</b>OPERATORS</article><article><b>{stations.filter((station) => station.status === 'online').length}</b>ONLINE</article><article><b>{logs.length}</b>LOGS</article></div>
+        <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{clubs.filter((club) => club.my_role).length}</b>MY CLUBS</article><article><b>{clubs.filter((club) => club.can_manage).reduce((sum, club) => sum + club.renewal_attention_count, 0)}</b>RENEWALS DUE</article><article><b>{events.filter((event) => event.status === 'scheduled').length}</b>UPCOMING</article></div>
         <div class="boundary"><b>One home for group operations.</b><p>Configure contests, coordinate operators, follow station activity, collect logs, and build club reports.</p></div>
-      {:else if tab === 'clubs'}<ClubsPanel {clubs} refresh={load} />
+      {:else if tab === 'clubs'}<ClubsPanel {clubs} currentUser={user} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} refresh={load} />
       {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
       {:else}<ActivityPanel {stations} {logs} {messages} refresh={load} />{/if}
