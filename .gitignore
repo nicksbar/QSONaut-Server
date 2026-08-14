@@ -1,0 +1,7 @@
+/target
+/web/.svelte-kit
+/web/build
+/web/node_modules
+.env
+*.log
+

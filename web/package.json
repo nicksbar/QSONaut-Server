@@ -1,0 +1,20 @@
+{
+  "name": "qsonaut-server-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.70.2",
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "svelte": "5.56.9",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.2.1"
+  }
+}

@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qsonaut
+      POSTGRES_USER: qsonaut
+      POSTGRES_PASSWORD: ${QSONAUT_DATABASE_PASSWORD:?set QSONAUT_DATABASE_PASSWORD}
+    volumes:
+      - qsonaut-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qsonaut -d qsonaut"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qsonaut-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      QSONAUT_DATABASE_URL: postgresql://qsonaut:${QSONAUT_DATABASE_PASSWORD}@postgres/qsonaut
+      QSONAUT_SERVER_BIND: 0.0.0.0:8080
+      QSONAUT_SERVER_WEB_ROOT: /app/web/build
+      QSONAUT_SECURE_COOKIES: ${QSONAUT_SECURE_COOKIES:-false}
+      RUST_LOG: qsonaut_server=info,tower_http=info
+    ports:
+      - "8080:8080"
+
+volumes:
+  qsonaut-data:

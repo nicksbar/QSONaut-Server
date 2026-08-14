@@ -1,0 +1,48 @@
+[workspace]
+members = [
+    "apps/qsonaut-server",
+    "crates/qsonaut-api",
+    "crates/qsonaut-contests",
+    "crates/qsonaut-protocol",
+    "crates/qsonaut-store",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["QSONaut Contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+axum = "0.8.9"
+axum-extra = { version = "0.12", features = ["cookie"] }
+argon2 = "0.5"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+http-body-util = "0.1"
+qsonaut-api = { path = "crates/qsonaut-api" }
+qsonaut-contests = { path = "crates/qsonaut-contests" }
+qsonaut-protocol = { path = "crates/qsonaut-protocol" }
+qsonaut-store = { path = "crates/qsonaut-store" }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+time = "0.3"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+utoipa = { version = "5.5", features = ["macros", "uuid", "chrono"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
