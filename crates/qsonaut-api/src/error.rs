@@ -28,6 +28,12 @@ impl HttpError {
             message: "administrator access required".into(),
         }
     }
+    pub(crate) fn forbidden_with(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
     pub(crate) fn conflict(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -61,6 +67,9 @@ impl IntoResponse for HttpError {
 pub(crate) type HttpResult<T> = Result<T, HttpError>;
 impl From<sqlx::Error> for HttpError {
     fn from(error: sqlx::Error) -> Self {
+        if matches!(error, sqlx::Error::RowNotFound) {
+            return Self::not_found();
+        }
         tracing::error!(%error, "database request failed");
         if matches!(error, sqlx::Error::Database(ref db) if db.is_unique_violation()) {
             return Self::conflict("record already exists");

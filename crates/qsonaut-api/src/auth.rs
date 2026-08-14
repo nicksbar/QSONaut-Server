@@ -3,14 +3,23 @@ use crate::{
     error::{HttpError, HttpResult},
 };
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    response::IntoResponse,
+};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, Utc};
-use qsonaut_protocol::{BootstrapRequest, Credentials, CurrentUser, SetupStatus};
+use qsonaut_protocol::{
+    BootstrapRequest, Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
+    DeviceTokenRecord, SetupStatus,
+};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use time::Duration;
+use uuid::Uuid;
 
 const COOKIE_NAME: &str = "qsonaut_session";
 #[utoipa::path(get, path = "/api/v1/auth/setup", tag = "authentication", responses((status = 200, body = SetupStatus)))]
@@ -47,27 +56,125 @@ pub(crate) async fn login(
     jar: CookieJar,
     Json(input): Json<Credentials>,
 ) -> HttpResult<impl IntoResponse> {
-    let Some((user, hash)) = state
-        .store
-        .user_credentials(&normalize_call(&input.callsign))
-        .await?
-    else {
-        return Err(HttpError::unauthorized());
-    };
-    let password = input.password;
-    let valid = tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&hash).ok().is_some_and(|parsed| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &parsed)
-                .is_ok()
-        })
-    })
-    .await
-    .map_err(|_| HttpError::internal())?;
-    if !valid {
-        return Err(HttpError::unauthorized());
-    }
+    let user = verify_credentials(&state, input).await?;
     Ok((create_session(&state, jar, user.id).await?, Json(user)))
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/device", tag = "authentication", request_body = DeviceCredentials, responses((status = 200, body = DeviceToken), (status = 401, description = "Invalid credentials")))]
+pub(crate) async fn device_login(
+    State(state): State<AppState>,
+    Json(input): Json<DeviceCredentials>,
+) -> HttpResult<Json<DeviceToken>> {
+    let user = verify_credentials(
+        &state,
+        Credentials {
+            callsign: input.callsign,
+            password: input.password,
+        },
+    )
+    .await?;
+    issue_device_token(&state, user, &input.device_name).await
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/device/session", tag = "authentication", request_body = DeviceRegistration, responses((status = 200, body = DeviceToken), (status = 401, description = "Not authenticated")))]
+pub(crate) async fn register_session_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<DeviceRegistration>,
+) -> HttpResult<Json<DeviceToken>> {
+    let user = require_user(&state, &jar).await?;
+    issue_device_token(&state, user, &input.device_name).await
+}
+
+#[utoipa::path(get, path = "/api/v1/auth/devices", tag = "authentication", responses((status = 200, body = [DeviceTokenRecord])))]
+pub(crate) async fn session_devices(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<DeviceTokenRecord>>> {
+    let user = require_user(&state, &jar).await?;
+    Ok(Json(state.store.device_tokens(user.id).await?))
+}
+
+#[utoipa::path(delete, path = "/api/v1/auth/devices/{token_id}", tag = "authentication", params(("token_id" = Uuid, Path)), responses((status = 204), (status = 404)))]
+pub(crate) async fn revoke_session_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(token_id): Path<Uuid>,
+) -> HttpResult<StatusCode> {
+    let user = require_user(&state, &jar).await?;
+    if !state
+        .store
+        .delete_device_token_by_id(user.id, token_id)
+        .await?
+    {
+        return Err(HttpError::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/devices/{token_id}/reissue", tag = "authentication", params(("token_id" = Uuid, Path)), responses((status = 200, body = DeviceToken), (status = 404)))]
+pub(crate) async fn reissue_session_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(token_id): Path<Uuid>,
+) -> HttpResult<Json<DeviceToken>> {
+    let user = require_user(&state, &jar).await?;
+    let name = state
+        .store
+        .device_token_name(user.id, token_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    let replacement = issue_device_token(&state, user.clone(), &name).await?;
+    state
+        .store
+        .delete_device_token_by_id(user.id, token_id)
+        .await?;
+    Ok(replacement)
+}
+
+async fn issue_device_token(
+    state: &AppState,
+    user: CurrentUser,
+    device_name: &str,
+) -> HttpResult<Json<DeviceToken>> {
+    let name = device_name.trim();
+    if name.is_empty() || name.len() > 100 {
+        return Err(HttpError::bad_request(
+            "device name must contain 1 to 100 characters",
+        ));
+    }
+    let mut bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let token = URL_SAFE_NO_PAD.encode(bytes);
+    let expires_at = Utc::now() + ChronoDuration::days(90);
+    state
+        .store
+        .create_device_token(user.id, name, &token_hash(&token), expires_at)
+        .await?;
+    Ok(Json(DeviceToken {
+        token,
+        user,
+        expires_at,
+        scopes: vec![
+            "events:read".to_owned(),
+            "messages:read".to_owned(),
+            "messages:write".to_owned(),
+            "presence:write".to_owned(),
+            "logs:write".to_owned(),
+            "diagnostics:write".to_owned(),
+        ],
+    }))
+}
+
+#[utoipa::path(delete, path = "/api/v1/auth/device", tag = "authentication", responses((status = 204, description = "Device token revoked")))]
+pub(crate) async fn revoke_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> HttpResult<StatusCode> {
+    let token = bearer_token(&headers)?;
+    require_device(&state, &headers).await?;
+    state.store.delete_device_token(&token_hash(token)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 #[utoipa::path(get, path = "/api/v1/auth/me", tag = "authentication", responses((status = 200, body = CurrentUser), (status = 401, description = "Not authenticated")))]
 pub(crate) async fn me(
@@ -112,6 +219,50 @@ pub(crate) async fn require_admin(state: &AppState, jar: &CookieJar) -> HttpResu
     }
     Ok(user)
 }
+pub(crate) async fn require_device(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> HttpResult<CurrentUser> {
+    state
+        .store
+        .device_token_user(&token_hash(bearer_token(headers)?))
+        .await?
+        .ok_or_else(HttpError::unauthorized)
+}
+
+async fn verify_credentials(state: &AppState, input: Credentials) -> HttpResult<CurrentUser> {
+    let Some((user, hash)) = state
+        .store
+        .user_credentials(&normalize_call(&input.callsign))
+        .await?
+    else {
+        return Err(HttpError::unauthorized());
+    };
+    let password = input.password;
+    let valid = tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&hash).ok().is_some_and(|parsed| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        })
+    })
+    .await
+    .map_err(|_| HttpError::internal())?;
+    if valid {
+        Ok(user)
+    } else {
+        Err(HttpError::unauthorized())
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> HttpResult<&str> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .ok_or_else(HttpError::unauthorized)
+}
 async fn create_session(
     state: &AppState,
     jar: CookieJar,
@@ -138,7 +289,7 @@ async fn create_session(
             .build(),
     ))
 }
-fn token_hash(token: &str) -> Vec<u8> {
+pub(crate) fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 pub(crate) fn normalize_call(call: &str) -> String {

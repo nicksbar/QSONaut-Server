@@ -5,11 +5,74 @@ export type User = {
   global_role: string;
 };
 
+export type DeviceToken = {
+  token: string;
+  user: User;
+  expires_at: string;
+  scopes: string[];
+};
+
+export type DeviceTokenRecord = {
+  id: string;
+  device_name: string;
+  expires_at: string;
+  last_used_at: string | null;
+  created_at: string;
+};
+
 export type Club = {
   id: string;
   name: string;
   callsign: string | null;
   description: string;
+  member_count: number;
+  renewal_attention_count: number;
+  my_role: string | null;
+  join_request_status: string | null;
+  can_manage: boolean;
+};
+
+export type ClubMember = {
+  club_id: string;
+  user_id: string;
+  callsign: string;
+  display_name: string;
+  role: string;
+  membership_status: string;
+  dues_status: string;
+  membership_number: string | null;
+  renewal_due_on: string | null;
+  joined_at: string;
+};
+
+export type ClubJoinRequest = {
+  id: string;
+  club_id: string;
+  user_id: string;
+  callsign: string;
+  display_name: string;
+  status: string;
+  requested_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+};
+
+export type ClubPosition = {
+  id: string; club_id: string; name: string; position_type: string;
+  seats: number; term_years: number; election_parity: string; description: string;
+};
+export type ClubPositionAssignment = {
+  id: string; position_id: string; user_id: string; callsign: string; display_name: string;
+  seat_number: number; starts_on: string; ends_on: string; selection_method: string;
+};
+export type ClubElection = {
+  id: string; club_id: string; title: string; election_year: number; status: string;
+  opens_at: string | null; closes_at: string | null; notes: string; position_ids: string[];
+};
+export type ClubGovernance = {
+  positions: ClubPosition[];
+  assignments: ClubPositionAssignment[];
+  elections: ClubElection[];
 };
 
 export type Membership = {
@@ -36,6 +99,17 @@ export type Station = {
   status: string;
   metadata: Record<string, unknown>;
   last_seen: string;
+};
+
+export type DiagnosticReport = {
+  id: string;
+  user_id: string;
+  operator_callsign: string;
+  instance_id: string;
+  category: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  created_at: string;
 };
 
 export type MemberDetail = {
@@ -91,4 +165,15 @@ export type QsoLog = {
   occurred_at: string;
   points: number;
   source: string;
+};
+
+export type ChannelMessage = {
+  id: string;
+  user_id: string;
+  author_callsign: string;
+  event_id: string | null;
+  channel: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
 };

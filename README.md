@@ -2,26 +2,27 @@
 
 QSONaut Server is the independent coordination service for QSONaut operators,
 clubs, and group events. It provides management, synchronization, reporting,
-chat, and protocol-integration services while leaving radio operation in the
-native QSONaut application.
+shared channels, and protocol-integration services to native QSONaut clients.
 
-## Product boundary
+## Capabilities
 
-The server owns:
+The server provides:
 
 - authentication and authorization;
-- clubs, members, events, and contest configuration;
-- synchronized QSO records, presence, chat, and reports;
+- club rosters, join approvals, renewals, governance, elections, events, and contest configuration;
+- synchronized QSO records, live station presence, shared channels, and reports;
 - N3FJP-compatible integration;
 - the management web console.
-
-The server does **not** own radio control, DSP, decoding, audio, PTT, transmit
-scheduling, or QSO automation. Those remain local to QSONaut. Connecting a
-QSONaut installation to this service is always optional.
 
 See [docs/scope.md](docs/scope.md), [docs/architecture.md](docs/architecture.md),
 the [QSONaut client synchronization boundary](docs/qsonaut-client-sync.md), and
 the future opt-in [diagnostic bundle design](docs/diagnostic-bundles.md).
+Club ownership, roster lifecycle, and election scheduling are described in
+[docs/club-operations.md](docs/club-operations.md).
+
+Native QSONaut clients connect through the same HTTPS endpoint as the web UI.
+The `/api/v1/ws` route uses a standard WebSocket upgrade, so a reverse proxy can
+publish everything on port 443 without a separate public service port.
 
 ## Repository layout
 
@@ -101,6 +102,11 @@ docker compose -f deploy/postgres-dev.compose.yaml down -v
 ```
 
 ### Build and deployment
+
+Source-based deployment instructions for Docker Compose, Proxmox, and native
+builds are in [docs/deployment.md](docs/deployment.md). The repository's
+`main` branch is the supported source of truth; a published container is
+optional.
 
 Build the complete service:
 

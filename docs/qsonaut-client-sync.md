@@ -1,6 +1,6 @@
 # QSONaut client synchronization
 
-The management server now has persistence and management views for two kinds of explicitly published QSONaut activity. The QSONaut desktop-side publisher is a separate integration and is not yet enabled by these server changes alone.
+The management server persists and presents explicitly published QSONaut station activity, QSO records, and shared automation-channel traffic.
 
 ## Station presence
 
@@ -14,6 +14,66 @@ An authenticated QSONaut client may submit an idempotent record to `POST /api/v1
 
 The server rejects duplicate idempotency keys rather than silently duplicating contacts. The management UI is intentionally read-only for QSO activity: operating and correction workflows remain in QSONaut until conflict-resolution and audit semantics are designed.
 
-## Authentication follow-up
+## Device authentication
 
-The current endpoints accept the existing authenticated session mechanism. Before the native QSONaut integration ships, add revocable device credentials with narrow `presence:write` and `logs:write` scopes. Browser administrator sessions must not be copied into desktop configuration.
+Signed-in operators can open **Station link** in the management UI, name the
+QSONaut installation, and create a token through the browser session. The token
+is displayed once for pasting into QSONaut's Server tab. The browser uses
+`POST /api/v1/auth/device/session`; it does not expose the session cookie to the
+native client.
+
+Native clients exchange their callsign, password, and a local device name at
+`POST /api/v1/auth/device`. The returned 90-day bearer token is shown once and
+is stored only as a SHA-256 hash by the server. Password resets revoke all
+browser sessions and device tokens for that operator. A client can revoke its
+current token with `DELETE /api/v1/auth/device`.
+
+The token has fixed `events:read`, `presence:write`, `logs:write`, `diagnostics:write`,
+`messages:read`, and `messages:write` capabilities. Browser cookies are never
+copied into QSONaut configuration.
+
+The **Station link** page lists the signed-in operator's issued tokens with
+creation, expiry, and last-use timestamps. Operators may revoke a token or
+reissue it; a replacement secret is again displayed only once.
+
+## Diagnostic snapshots
+
+QSONaut may send a manually approved `diagnostic` WebSocket message containing
+bounded structured radio, audio, decoder, and latest-error state. The server
+retains these reports separately from QSO logs and exposes them only in the
+administrator Activity view. Tokens, audio samples, and configured device names
+are excluded from the client snapshot.
+
+## Shared channels
+
+Authenticated native clients can publish bounded text messages to named
+channels over the WebSocket. The server records the authenticated author,
+persists the message, includes recent traffic in snapshots, and broadcasts new
+messages to connected clients. The management Activity view displays the most
+recent 200 messages alongside station presence and collected logs.
+
+## WebSocket transport
+
+QSONaut connects to `GET /api/v1/ws` using the `qsonaut.v1` subprotocol and an
+`Authorization: Bearer ...` header. Messages use versioned JSON envelopes with
+client-generated event UUIDs. The current message set provides event/catalog
+snapshots, presence publication, idempotent QSO submission, shared-channel
+publication and broadcast, acknowledgements, and heartbeats.
+
+This is an ordinary HTTP WebSocket upgrade. A hosted deployment exposes only
+HTTPS/WSS on port 443; the reverse proxy forwards `/api/v1/ws` to the same
+QSONaut Server process as the management API and web UI. No additional public
+port or radio-specific proxy protocol is required.
+
+Example nginx location:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```

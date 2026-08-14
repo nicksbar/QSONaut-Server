@@ -16,7 +16,8 @@ Management browser - HTTPS -----------------+
 
 - HTTP routes are versioned under `/api/v1`.
 - HTTP schemas are published as OpenAPI at `/api/v1/openapi.json`.
-- WebSocket messages will use versioned JSON envelopes with stable event IDs.
+- WebSocket messages use versioned JSON envelopes with stable event IDs at
+  `/api/v1/ws` using the `qsonaut.v1` subprotocol.
 - Clients generate idempotency IDs for offline-safe writes.
 - Public DTOs live in `qsonaut-protocol`; persistence models do not.
 - Breaking changes require a new API version.

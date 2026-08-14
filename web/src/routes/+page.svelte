@@ -4,11 +4,12 @@
   import ClubsPanel from '$lib/ClubsPanel.svelte';
   import EventsPanel from '$lib/EventsPanel.svelte';
   import MembersPanel from '$lib/MembersPanel.svelte';
+  import StationLinkPanel from '$lib/StationLinkPanel.svelte';
   import { api } from '$lib/api';
-  import type { Club, ContestTemplate, Event, QsoLog, Station, User } from '$lib/types';
+  import type { ChannelMessage, Club, ContestTemplate, DiagnosticReport, Event, QsoLog, Station, User } from '$lib/types';
 
   type Phase = 'loading' | 'setup' | 'login' | 'ready';
-  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'activity';
+  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'activity' | 'station';
 
   let phase = $state<Phase>('loading');
   let tab = $state<Tab>('overview');
@@ -24,16 +25,21 @@
   let templates = $state<ContestTemplate[]>([]);
   let stations = $state<Station[]>([]);
   let logs = $state<QsoLog[]>([]);
+  let messages = $state<ChannelMessage[]>([]);
+  let diagnostics = $state<DiagnosticReport[]>([]);
 
   async function load() {
-    [clubs, members, events, templates, stations, logs] = await Promise.all([
+    [clubs, events, templates] = await Promise.all([
       api<Club[]>('/api/v1/clubs'),
-      api<User[]>('/api/v1/members'),
       api<Event[]>('/api/v1/events'),
       api<ContestTemplate[]>('/api/v1/contest-templates'),
-      api<Station[]>('/api/v1/stations'),
-      api<QsoLog[]>('/api/v1/logs'),
     ]);
+    if (user?.global_role === 'administrator') {
+      [members, stations, logs, messages, diagnostics] = await Promise.all([
+        api<User[]>('/api/v1/members'), api<Station[]>('/api/v1/stations'),
+        api<QsoLog[]>('/api/v1/logs'), api<ChannelMessage[]>('/api/v1/channel-messages'), api<DiagnosticReport[]>('/api/v1/diagnostics'),
+      ]);
+    } else { members = []; stations = []; logs = []; messages = []; diagnostics = []; }
   }
 
   async function initialize() {
@@ -41,10 +47,6 @@
       const setup = await api<{ setup_required: boolean }>('/api/v1/auth/setup');
       if (setup.setup_required) { phase = 'setup'; return; }
       const current = await api<User>('/api/v1/auth/me');
-      if (current.global_role !== 'administrator') {
-        await api('/api/v1/auth/logout', { method: 'POST' });
-        phase = 'login'; return;
-      }
       user = current; phase = 'ready'; await load();
     } catch { phase = 'login'; }
   }
@@ -59,10 +61,6 @@
           ? { callsign, display_name: displayName, password }
           : { callsign, password }),
       });
-      if (current.global_role !== 'administrator') {
-        await api('/api/v1/auth/logout', { method: 'POST' });
-        throw new Error('The web console requires administrator access. Use QSONaut for event activity.');
-      }
       user = current; password = ''; phase = 'ready'; await load();
     } catch (cause) { error = (cause as Error).message; } finally { busy = false; }
   }
@@ -96,19 +94,20 @@
 {:else}
   <div class="shell">
     <header><div><p class="eyebrow cyan">QSONAUT / GROUP OPERATIONS</p><h1>Command registry</h1></div><div class="operator"><i></i><b>{user?.callsign}</b><button onclick={logout}>SIGN OUT</button></div></header>
-    <nav>{#each ['overview','clubs','members','events','activity'] as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item}</button>{/each}</nav>
+    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity','station'] : ['overview','clubs','station']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item === 'station' ? 'station link' : item}</button>{/each}</nav>
     {#if error}<p class="error banner">{error}</p>{/if}
     <main>
       {#if tab === 'overview'}
         <p class="eyebrow amber">CONTROL PLANE / ONLINE</p>
         <h2 class="hero">{events.filter((event) => event.status === 'active').length} active operations</h2>
-        <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{members.length}</b>OPERATORS</article><article><b>{stations.filter((station) => station.status === 'online').length}</b>ONLINE</article><article><b>{logs.length}</b>LOGS</article></div>
-        <div class="boundary"><b>Management and coordination live here.</b><p>Radio control, decoding, audio, PTT, and operating workflows remain in QSONaut.</p></div>
-      {:else if tab === 'clubs'}<ClubsPanel {clubs} refresh={load} />
+        <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{clubs.filter((club) => club.my_role).length}</b>MY CLUBS</article><article><b>{clubs.filter((club) => club.can_manage).reduce((sum, club) => sum + club.renewal_attention_count, 0)}</b>RENEWALS DUE</article><article><b>{events.filter((event) => event.status === 'scheduled').length}</b>UPCOMING</article></div>
+        <div class="boundary"><b>One home for group operations.</b><p>Configure contests, coordinate operators, follow station activity, collect logs, and build club reports.</p></div>
+      {:else if tab === 'clubs'}<ClubsPanel {clubs} currentUser={user} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} refresh={load} />
       {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
-      {:else}<ActivityPanel {stations} {logs} />{/if}
+      {:else if tab === 'activity'}<ActivityPanel {stations} {logs} {messages} {diagnostics} refresh={load} />
+      {:else}<StationLinkPanel currentUser={user} />{/if}
     </main>
-    <footer class="mono">MANAGEMENT ONLY <span>NO RADIO CONTROL · NO AUDIO · NO PTT · NO MODEM</span></footer>
+    <footer class="mono">QSONAUT SERVER <span>CLUBS · CONTESTS · LIVE STATIONS · SHARED LOGS</span></footer>
   </div>
 {/if}
