@@ -23,6 +23,10 @@ See [docs/scope.md](docs/scope.md), [docs/architecture.md](docs/architecture.md)
 the [QSONaut client synchronization boundary](docs/qsonaut-client-sync.md), and
 the future opt-in [diagnostic bundle design](docs/diagnostic-bundles.md).
 
+Native QSONaut clients connect through the same HTTPS endpoint as the web UI.
+The `/api/v1/ws` route uses a standard WebSocket upgrade, so a reverse proxy can
+publish everything on port 443 without a separate public service port.
+
 ## Repository layout
 
 - `apps/qsonaut-server` - deployable Rust process

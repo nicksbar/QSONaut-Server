@@ -57,6 +57,21 @@ pub struct CurrentUser {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceCredentials {
+    pub callsign: String,
+    pub password: String,
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceToken {
+    pub token: String,
+    pub user: CurrentUser,
+    pub expires_at: DateTime<Utc>,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct MemberInput {
     pub callsign: String,
     pub display_name: String,
@@ -268,6 +283,51 @@ pub struct QsoLogInput {
     pub points: i32,
     #[serde(default = "default_qso_source")]
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientEnvelope {
+    pub protocol_version: String,
+    pub event_id: Uuid,
+    #[serde(flatten)]
+    pub message: ClientMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum ClientMessage {
+    Hello { client_version: String },
+    Sync,
+    Presence(StationPresenceInput),
+    Log(QsoLogInput),
+    Ping,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerEnvelope {
+    pub protocol_version: String,
+    pub event_id: Uuid,
+    #[serde(flatten)]
+    pub message: ServerMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum ServerMessage {
+    Welcome {
+        user: CurrentUser,
+    },
+    Snapshot {
+        events: Vec<Event>,
+        contest_templates: Vec<ContestTemplate>,
+    },
+    PresenceAccepted(StationPresence),
+    LogAccepted(QsoLog),
+    Ack,
+    Pong,
+    Error {
+        message: String,
+    },
 }
 
 fn default_qso_source() -> String {

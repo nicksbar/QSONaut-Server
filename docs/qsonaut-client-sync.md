@@ -14,6 +14,39 @@ An authenticated QSONaut client may submit an idempotent record to `POST /api/v1
 
 The server rejects duplicate idempotency keys rather than silently duplicating contacts. The management UI is intentionally read-only for QSO activity: operating and correction workflows remain in QSONaut until conflict-resolution and audit semantics are designed.
 
-## Authentication follow-up
+## Device authentication
 
-The current endpoints accept the existing authenticated session mechanism. Before the native QSONaut integration ships, add revocable device credentials with narrow `presence:write` and `logs:write` scopes. Browser administrator sessions must not be copied into desktop configuration.
+Native clients exchange their callsign, password, and a local device name at
+`POST /api/v1/auth/device`. The returned 90-day bearer token is shown once and
+is stored only as a SHA-256 hash by the server. Password resets revoke all
+browser sessions and device tokens for that operator. A client can revoke its
+current token with `DELETE /api/v1/auth/device`.
+
+The token has the fixed `events:read`, `presence:write`, and `logs:write`
+capabilities. Browser cookies are never copied into QSONaut configuration.
+
+## WebSocket transport
+
+QSONaut connects to `GET /api/v1/ws` using the `qsonaut.v1` subprotocol and an
+`Authorization: Bearer ...` header. Messages use versioned JSON envelopes with
+client-generated event UUIDs. The current message set provides event/catalog
+snapshots, presence publication, idempotent QSO submission, acknowledgements,
+and heartbeats.
+
+This is an ordinary HTTP WebSocket upgrade. A hosted deployment exposes only
+HTTPS/WSS on port 443; the reverse proxy forwards `/api/v1/ws` to the same
+QSONaut Server process as the management API and web UI. No additional public
+port or radio-specific proxy protocol is required.
+
+Example nginx location:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```

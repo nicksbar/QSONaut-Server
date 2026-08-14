@@ -3,6 +3,7 @@
 mod auth;
 mod error;
 mod management;
+mod realtime;
 
 use axum::{
     Json, Router,
@@ -10,10 +11,10 @@ use axum::{
 };
 use qsonaut_protocol::{
     API_VERSION, ApiError, BootstrapRequest, Club, ClubInput, ClubMembership, ClubMembershipInput,
-    ContestTemplate, Credentials, CurrentUser, Event, EventInput, EventStatus, EventStatusInput,
-    HealthResponse, MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput,
-    PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo, ServiceStatus, SetupStatus,
-    StationPresence, StationPresenceInput,
+    ContestTemplate, Credentials, CurrentUser, DeviceCredentials, DeviceToken, Event, EventInput,
+    EventStatus, EventStatusInput, HealthResponse, MemberClubRole, MemberDetail, MemberInput,
+    MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo, ServiceStatus,
+    SetupStatus, StationPresence, StationPresenceInput,
 };
 use qsonaut_store::Store;
 use utoipa::OpenApi;
@@ -23,6 +24,7 @@ use utoipa::OpenApi;
     paths(
         health, service_info,
         auth::setup_status, auth::bootstrap, auth::login, auth::me, auth::logout,
+        auth::device_login, auth::revoke_device,
         management::members, management::create_member,
         management::member_detail, management::update_member, management::reset_member_password,
         management::club_members, management::set_club_member,
@@ -35,6 +37,7 @@ use utoipa::OpenApi;
     ),
     components(schemas(
         HealthResponse, ServiceInfo, ServiceStatus, ApiError, SetupStatus, Credentials,
+        DeviceCredentials, DeviceToken,
         BootstrapRequest, CurrentUser, MemberInput, ClubMembership, ClubMembershipInput,
         MemberUpdateInput, PasswordResetInput, MemberClubRole, MemberDetail,
         Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventStatusInput,
@@ -75,6 +78,11 @@ pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
+        .route(
+            "/api/v1/auth/device",
+            post(auth::device_login).delete(auth::revoke_device),
+        )
+        .route("/api/v1/ws", get(realtime::connect))
         .route(
             "/api/v1/clubs",
             get(management::clubs).post(management::create_club),
@@ -232,6 +240,7 @@ mod tests {
         for path in [
             "/api/v1/auth/setup",
             "/api/v1/auth/login",
+            "/api/v1/auth/device",
             "/api/v1/clubs",
             "/api/v1/members",
             "/api/v1/members/{member_id}",

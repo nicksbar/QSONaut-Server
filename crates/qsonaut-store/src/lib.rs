@@ -283,6 +283,10 @@ impl Store {
                 .bind(user_id)
                 .execute(&mut *tx)
                 .await?;
+            sqlx::query("DELETE FROM device_tokens WHERE user_id=$1")
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
         Ok(updated)
@@ -398,6 +402,50 @@ impl Store {
 
     pub async fn delete_session(&self, token_hash: &[u8]) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_device_token(
+        &self,
+        user_id: Uuid,
+        device_name: &str,
+        token_hash: &[u8],
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO device_tokens (id, user_id, device_name, token_hash, expires_at) VALUES ($1,$2,$3,$4,$5)")
+            .bind(Uuid::new_v4())
+            .bind(user_id)
+            .bind(device_name.trim())
+            .bind(token_hash)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn device_token_user(
+        &self,
+        token_hash: &[u8],
+    ) -> Result<Option<CurrentUser>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (Uuid, String, String, String)>(
+            "UPDATE device_tokens d SET last_used_at=now() FROM users u WHERE d.user_id=u.id AND d.token_hash=$1 AND d.expires_at > now() RETURNING u.id, u.callsign, u.display_name, u.global_role",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| CurrentUser {
+            id: r.0,
+            callsign: r.1,
+            display_name: r.2,
+            global_role: r.3,
+        }))
+    }
+
+    pub async fn delete_device_token(&self, token_hash: &[u8]) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM device_tokens WHERE token_hash=$1")
             .bind(token_hash)
             .execute(&self.pool)
             .await?;
