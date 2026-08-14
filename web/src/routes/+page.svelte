@@ -4,11 +4,12 @@
   import ClubsPanel from '$lib/ClubsPanel.svelte';
   import EventsPanel from '$lib/EventsPanel.svelte';
   import MembersPanel from '$lib/MembersPanel.svelte';
+  import StationLinkPanel from '$lib/StationLinkPanel.svelte';
   import { api } from '$lib/api';
-  import type { ChannelMessage, Club, ContestTemplate, Event, QsoLog, Station, User } from '$lib/types';
+  import type { ChannelMessage, Club, ContestTemplate, DiagnosticReport, Event, QsoLog, Station, User } from '$lib/types';
 
   type Phase = 'loading' | 'setup' | 'login' | 'ready';
-  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'activity';
+  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'activity' | 'station';
 
   let phase = $state<Phase>('loading');
   let tab = $state<Tab>('overview');
@@ -25,6 +26,7 @@
   let stations = $state<Station[]>([]);
   let logs = $state<QsoLog[]>([]);
   let messages = $state<ChannelMessage[]>([]);
+  let diagnostics = $state<DiagnosticReport[]>([]);
 
   async function load() {
     [clubs, events, templates] = await Promise.all([
@@ -33,11 +35,11 @@
       api<ContestTemplate[]>('/api/v1/contest-templates'),
     ]);
     if (user?.global_role === 'administrator') {
-      [members, stations, logs, messages] = await Promise.all([
+      [members, stations, logs, messages, diagnostics] = await Promise.all([
         api<User[]>('/api/v1/members'), api<Station[]>('/api/v1/stations'),
-        api<QsoLog[]>('/api/v1/logs'), api<ChannelMessage[]>('/api/v1/channel-messages'),
+        api<QsoLog[]>('/api/v1/logs'), api<ChannelMessage[]>('/api/v1/channel-messages'), api<DiagnosticReport[]>('/api/v1/diagnostics'),
       ]);
-    } else { members = []; stations = []; logs = []; messages = []; }
+    } else { members = []; stations = []; logs = []; messages = []; diagnostics = []; }
   }
 
   async function initialize() {
@@ -92,7 +94,7 @@
 {:else}
   <div class="shell">
     <header><div><p class="eyebrow cyan">QSONAUT / GROUP OPERATIONS</p><h1>Command registry</h1></div><div class="operator"><i></i><b>{user?.callsign}</b><button onclick={logout}>SIGN OUT</button></div></header>
-    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity'] : ['overview','clubs']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item}</button>{/each}</nav>
+    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity','station'] : ['overview','clubs','station']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item === 'station' ? 'station link' : item}</button>{/each}</nav>
     {#if error}<p class="error banner">{error}</p>{/if}
     <main>
       {#if tab === 'overview'}
@@ -103,7 +105,8 @@
       {:else if tab === 'clubs'}<ClubsPanel {clubs} currentUser={user} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} refresh={load} />
       {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
-      {:else}<ActivityPanel {stations} {logs} {messages} refresh={load} />{/if}
+      {:else if tab === 'activity'}<ActivityPanel {stations} {logs} {messages} {diagnostics} refresh={load} />
+      {:else}<StationLinkPanel currentUser={user} />{/if}
     </main>
     <footer class="mono">QSONAUT SERVER <span>CLUBS · CONTESTS · LIVE STATIONS · SHARED LOGS</span></footer>
   </div>

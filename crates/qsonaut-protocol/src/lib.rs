@@ -64,11 +64,25 @@ pub struct DeviceCredentials {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceRegistration {
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceToken {
     pub token: String,
     pub user: CurrentUser,
     pub expires_at: DateTime<Utc>,
     pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceTokenRecord {
+    pub id: Uuid,
+    pub device_name: String,
+    pub expires_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -437,6 +451,27 @@ pub struct ChannelMessageInput {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct DiagnosticReportInput {
+    pub instance_id: Uuid,
+    pub category: String,
+    pub summary: String,
+    #[serde(default = "default_json_object")]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct DiagnosticReport {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub operator_callsign: String,
+    pub instance_id: Uuid,
+    pub category: String,
+    pub summary: String,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientEnvelope {
     pub protocol_version: String,
@@ -452,6 +487,7 @@ pub enum ClientMessage {
     Sync,
     Presence(StationPresenceInput),
     Log(QsoLogInput),
+    Diagnostic(DiagnosticReportInput),
     ChannelMessage(ChannelMessageInput),
     Ping,
 }
@@ -477,6 +513,7 @@ pub enum ServerMessage {
     },
     PresenceAccepted(StationPresence),
     LogAccepted(QsoLog),
+    DiagnosticAccepted(DiagnosticReport),
     ChannelMessageAccepted(ChannelMessage),
     ChannelMessagePublished(ChannelMessage),
     Ack,

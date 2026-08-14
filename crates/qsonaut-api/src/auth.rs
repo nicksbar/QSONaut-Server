@@ -5,7 +5,7 @@ use crate::{
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     response::IntoResponse,
 };
@@ -13,11 +13,13 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, Utc};
 use qsonaut_protocol::{
-    BootstrapRequest, Credentials, CurrentUser, DeviceCredentials, DeviceToken, SetupStatus,
+    BootstrapRequest, Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
+    DeviceTokenRecord, SetupStatus,
 };
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use time::Duration;
+use uuid::Uuid;
 
 const COOKIE_NAME: &str = "qsonaut_session";
 #[utoipa::path(get, path = "/api/v1/auth/setup", tag = "authentication", responses((status = 200, body = SetupStatus)))]
@@ -63,12 +65,6 @@ pub(crate) async fn device_login(
     State(state): State<AppState>,
     Json(input): Json<DeviceCredentials>,
 ) -> HttpResult<Json<DeviceToken>> {
-    let name = input.device_name.trim();
-    if name.is_empty() || name.len() > 100 {
-        return Err(HttpError::bad_request(
-            "device name must contain 1 to 100 characters",
-        ));
-    }
     let user = verify_credentials(
         &state,
         Credentials {
@@ -77,6 +73,76 @@ pub(crate) async fn device_login(
         },
     )
     .await?;
+    issue_device_token(&state, user, &input.device_name).await
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/device/session", tag = "authentication", request_body = DeviceRegistration, responses((status = 200, body = DeviceToken), (status = 401, description = "Not authenticated")))]
+pub(crate) async fn register_session_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<DeviceRegistration>,
+) -> HttpResult<Json<DeviceToken>> {
+    let user = require_user(&state, &jar).await?;
+    issue_device_token(&state, user, &input.device_name).await
+}
+
+#[utoipa::path(get, path = "/api/v1/auth/devices", tag = "authentication", responses((status = 200, body = [DeviceTokenRecord])))]
+pub(crate) async fn session_devices(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<DeviceTokenRecord>>> {
+    let user = require_user(&state, &jar).await?;
+    Ok(Json(state.store.device_tokens(user.id).await?))
+}
+
+#[utoipa::path(delete, path = "/api/v1/auth/devices/{token_id}", tag = "authentication", params(("token_id" = Uuid, Path)), responses((status = 204), (status = 404)))]
+pub(crate) async fn revoke_session_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(token_id): Path<Uuid>,
+) -> HttpResult<StatusCode> {
+    let user = require_user(&state, &jar).await?;
+    if !state
+        .store
+        .delete_device_token_by_id(user.id, token_id)
+        .await?
+    {
+        return Err(HttpError::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/devices/{token_id}/reissue", tag = "authentication", params(("token_id" = Uuid, Path)), responses((status = 200, body = DeviceToken), (status = 404)))]
+pub(crate) async fn reissue_session_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(token_id): Path<Uuid>,
+) -> HttpResult<Json<DeviceToken>> {
+    let user = require_user(&state, &jar).await?;
+    let name = state
+        .store
+        .device_token_name(user.id, token_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    let replacement = issue_device_token(&state, user.clone(), &name).await?;
+    state
+        .store
+        .delete_device_token_by_id(user.id, token_id)
+        .await?;
+    Ok(replacement)
+}
+
+async fn issue_device_token(
+    state: &AppState,
+    user: CurrentUser,
+    device_name: &str,
+) -> HttpResult<Json<DeviceToken>> {
+    let name = device_name.trim();
+    if name.is_empty() || name.len() > 100 {
+        return Err(HttpError::bad_request(
+            "device name must contain 1 to 100 characters",
+        ));
+    }
     let mut bytes = [0_u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     let token = URL_SAFE_NO_PAD.encode(bytes);
@@ -95,6 +161,7 @@ pub(crate) async fn device_login(
             "messages:write".to_owned(),
             "presence:write".to_owned(),
             "logs:write".to_owned(),
+            "diagnostics:write".to_owned(),
         ],
     }))
 }

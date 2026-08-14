@@ -14,10 +14,10 @@ use qsonaut_protocol::{
     ClubElectionStatusInput, ClubGovernance, ClubInput, ClubJoinDecisionInput, ClubJoinRequest,
     ClubMembership, ClubMembershipInput, ClubPosition, ClubPositionAssignment,
     ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate, Credentials, CurrentUser,
-    DeviceCredentials, DeviceToken, Event, EventInput, EventStatus, EventStatusInput,
-    HealthResponse, MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput,
-    PasswordResetInput, QsoLog, QsoLogInput, ServiceInfo, ServiceStatus, SetupStatus,
-    StationPresence, StationPresenceInput,
+    DeviceCredentials, DeviceRegistration, DeviceToken, DeviceTokenRecord, DiagnosticReport,
+    DiagnosticReportInput, Event, EventInput, EventStatus, EventStatusInput, HealthResponse,
+    MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput, QsoLog,
+    QsoLogInput, ServiceInfo, ServiceStatus, SetupStatus, StationPresence, StationPresenceInput,
 };
 use qsonaut_store::Store;
 use utoipa::OpenApi;
@@ -27,7 +27,8 @@ use utoipa::OpenApi;
     paths(
         health, service_info,
         auth::setup_status, auth::bootstrap, auth::login, auth::me, auth::logout,
-        auth::device_login, auth::revoke_device,
+        auth::device_login, auth::register_session_device, auth::session_devices,
+        auth::reissue_session_device, auth::revoke_session_device, auth::revoke_device,
         management::members, management::create_member,
         management::member_detail, management::update_member, management::reset_member_password,
         management::club_members, management::set_club_member,
@@ -41,11 +42,11 @@ use utoipa::OpenApi;
         management::contest_templates,
         management::events, management::create_event, management::set_event_status,
         management::stations, management::publish_station_presence, management::channel_messages,
-        management::logs, management::collect_log
+        management::logs, management::collect_log, management::diagnostics
     ),
     components(schemas(
         HealthResponse, ServiceInfo, ServiceStatus, ApiError, SetupStatus, Credentials,
-        DeviceCredentials, DeviceToken,
+        DeviceCredentials, DeviceRegistration, DeviceToken, DeviceTokenRecord,
         BootstrapRequest, CurrentUser, MemberInput, ClubMembership, ClubMembershipInput,
         ClubJoinRequest, ClubJoinDecisionInput,
         ClubGovernance, ClubPosition, ClubPositionInput,
@@ -53,7 +54,7 @@ use utoipa::OpenApi;
         ClubElectionStatusInput,
         MemberUpdateInput, PasswordResetInput, MemberClubRole, MemberDetail,
         Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventStatusInput, ChannelMessage,
-        StationPresence, StationPresenceInput, QsoLog, QsoLogInput
+        StationPresence, StationPresenceInput, QsoLog, QsoLogInput, DiagnosticReport, DiagnosticReportInput
     )),
     tags(
         (name = "service", description = "Service discovery and readiness"),
@@ -96,6 +97,19 @@ pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
         .route(
             "/api/v1/auth/device",
             post(auth::device_login).delete(auth::revoke_device),
+        )
+        .route(
+            "/api/v1/auth/device/session",
+            post(auth::register_session_device),
+        )
+        .route("/api/v1/auth/devices", get(auth::session_devices))
+        .route(
+            "/api/v1/auth/devices/{token_id}",
+            axum::routing::delete(auth::revoke_session_device),
+        )
+        .route(
+            "/api/v1/auth/devices/{token_id}/reissue",
+            post(auth::reissue_session_device),
         )
         .route("/api/v1/ws", get(realtime::connect))
         .route(
@@ -175,6 +189,7 @@ pub fn router_with_store(store: Store, secure_cookies: bool) -> Router {
             "/api/v1/logs",
             get(management::logs).post(management::collect_log),
         )
+        .route("/api/v1/diagnostics", get(management::diagnostics))
         .with_state(state);
     router().merge(management)
 }
@@ -288,6 +303,10 @@ mod tests {
             "/api/v1/auth/setup",
             "/api/v1/auth/login",
             "/api/v1/auth/device",
+            "/api/v1/auth/device/session",
+            "/api/v1/auth/devices",
+            "/api/v1/auth/devices/{token_id}",
+            "/api/v1/auth/devices/{token_id}/reissue",
             "/api/v1/clubs",
             "/api/v1/members",
             "/api/v1/members/{member_id}",
@@ -306,6 +325,7 @@ mod tests {
             "/api/v1/channel-messages",
             "/api/v1/stations/presence",
             "/api/v1/logs",
+            "/api/v1/diagnostics",
         ] {
             assert!(paths.contains_key(path), "OpenAPI is missing {path}");
         }

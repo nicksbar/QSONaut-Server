@@ -6,8 +6,8 @@ use qsonaut_protocol::{
     ChannelMessage, ChannelMessageInput, Club, ClubElection, ClubElectionInput, ClubGovernance,
     ClubInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition,
     ClubPositionAssignment, ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate,
-    CurrentUser, Event, EventInput, EventStatus, MemberClubRole, QsoLog, QsoLogInput,
-    StationPresence, StationPresenceInput,
+    CurrentUser, DiagnosticReport, DiagnosticReportInput, Event, EventInput, EventStatus,
+    MemberClubRole, QsoLog, QsoLogInput, StationPresence, StationPresenceInput,
 };
 use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -581,6 +581,57 @@ impl Store {
         Ok(())
     }
 
+    pub async fn device_tokens(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<qsonaut_protocol::DeviceTokenRecord>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, String, DateTime<Utc>, Option<DateTime<Utc>>, DateTime<Utc>)>(
+            "SELECT id,device_name,expires_at,last_used_at,created_at FROM device_tokens WHERE user_id=$1 ORDER BY created_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|row| qsonaut_protocol::DeviceTokenRecord {
+                    id: row.0,
+                    device_name: row.1,
+                    expires_at: row.2,
+                    last_used_at: row.3,
+                    created_at: row.4,
+                })
+                .collect()
+        })
+    }
+
+    pub async fn device_token_name(
+        &self,
+        user_id: Uuid,
+        token_id: Uuid,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT device_name FROM device_tokens WHERE id=$1 AND user_id=$2")
+            .bind(token_id)
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn delete_device_token_by_id(
+        &self,
+        user_id: Uuid,
+        token_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(
+            sqlx::query("DELETE FROM device_tokens WHERE id=$1 AND user_id=$2")
+                .bind(token_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
+    }
+
     pub async fn device_token_user(
         &self,
         token_hash: &[u8],
@@ -846,6 +897,38 @@ impl Store {
     ) -> Result<Vec<StationPresence>, sqlx::Error> {
         sqlx::query_as::<_, StationPresenceRow>("SELECT sp.id, sp.user_id, u.callsign, u.display_name, sp.instance_id, sp.station_label, sp.radio_manufacturer, sp.radio_model, sp.frequency_hz, sp.band, sp.mode, sp.qsonaut_version, sp.platform, sp.status, sp.metadata, sp.last_seen FROM station_presence sp JOIN users u ON u.id=sp.user_id WHERE ($1::uuid IS NULL OR sp.user_id=$1) ORDER BY sp.last_seen DESC")
             .bind(user_id).fetch_all(&self.pool).await.map(|rows| rows.into_iter().map(StationPresence::from).collect())
+    }
+
+    pub async fn create_diagnostic_report(
+        &self,
+        user_id: Uuid,
+        input: &DiagnosticReportInput,
+    ) -> Result<DiagnosticReport, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String, String, Value, DateTime<Utc>)>(
+            "WITH inserted AS (INSERT INTO diagnostic_reports (id,user_id,instance_id,category,summary,payload) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *) SELECT d.id,d.user_id,u.callsign,d.instance_id,d.category,d.summary,d.payload,d.created_at FROM inserted d JOIN users u ON u.id=d.user_id",
+        )
+        .bind(Uuid::new_v4())
+        .bind(user_id)
+        .bind(input.instance_id)
+        .bind(input.category.trim())
+        .bind(input.summary.trim())
+        .bind(&input.payload)
+        .fetch_one(&self.pool)
+        .await
+        .map(|row| DiagnosticReport { id: row.0, user_id: row.1, operator_callsign: row.2, instance_id: row.3, category: row.4, summary: row.5, payload: row.6, created_at: row.7 })
+    }
+
+    pub async fn diagnostic_reports(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<DiagnosticReport>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String, String, Value, DateTime<Utc>)>(
+            "SELECT d.id,d.user_id,u.callsign,d.instance_id,d.category,d.summary,d.payload,d.created_at FROM diagnostic_reports d JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC LIMIT $1",
+        )
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().map(|row| DiagnosticReport { id: row.0, user_id: row.1, operator_callsign: row.2, instance_id: row.3, category: row.4, summary: row.5, payload: row.6, created_at: row.7 }).collect())
     }
 
     pub async fn upsert_station_presence(

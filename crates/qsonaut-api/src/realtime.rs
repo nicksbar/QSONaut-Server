@@ -168,6 +168,23 @@ async fn handle_message(
                     }
                 })
         }
+        ClientMessage::Diagnostic(input) => {
+            if input.category.trim().is_empty() || input.category.len() > 40 {
+                return Err("diagnostic category must contain 1 to 40 characters".to_owned());
+            }
+            if input.summary.trim().is_empty() || input.summary.len() > 240 {
+                return Err("diagnostic summary must contain 1 to 240 characters".to_owned());
+            }
+            if !input.payload.is_object() || input.payload.to_string().len() > 65_536 {
+                return Err("diagnostic payload must be an object no larger than 64 KiB".to_owned());
+            }
+            state
+                .store
+                .create_diagnostic_report(user.id, &input)
+                .await
+                .map(ServerMessage::DiagnosticAccepted)
+                .map_err(|error| internal_error(&error))
+        }
         ClientMessage::ChannelMessage(input) => {
             validate_channel_message(&input)?;
             let message = state

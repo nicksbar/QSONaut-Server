@@ -16,9 +16,9 @@ use qsonaut_protocol::{
     ChannelMessage, Club, ClubElection, ClubElectionInput, ClubElectionStatusInput, ClubGovernance,
     ClubInput, ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
     ClubPosition, ClubPositionAssignment, ClubPositionAssignmentInput, ClubPositionInput,
-    ContestTemplate, CurrentUser, Event, EventInput, EventStatusInput, MemberDetail, MemberInput,
-    MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput, StationPresence,
-    StationPresenceInput,
+    ContestTemplate, CurrentUser, DiagnosticReport, Event, EventInput, EventStatusInput,
+    MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput,
+    StationPresence, StationPresenceInput,
 };
 use uuid::Uuid;
 
@@ -521,6 +521,15 @@ pub(crate) async fn logs(
 ) -> HttpResult<Json<Vec<QsoLog>>> {
     require_admin(&state, &jar).await?;
     Ok(Json(state.store.qso_logs(500).await?))
+}
+
+#[utoipa::path(get, path = "/api/v1/diagnostics", tag = "activity", responses((status = 200, body = [DiagnosticReport])))]
+pub(crate) async fn diagnostics(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<qsonaut_protocol::DiagnosticReport>>> {
+    require_admin(&state, &jar).await?;
+    Ok(Json(state.store.diagnostic_reports(500).await?))
 }
 
 #[utoipa::path(get, path = "/api/v1/channel-messages", tag = "activity", responses((status = 200, body = [ChannelMessage])))]

@@ -5,6 +5,21 @@ export type User = {
   global_role: string;
 };
 
+export type DeviceToken = {
+  token: string;
+  user: User;
+  expires_at: string;
+  scopes: string[];
+};
+
+export type DeviceTokenRecord = {
+  id: string;
+  device_name: string;
+  expires_at: string;
+  last_used_at: string | null;
+  created_at: string;
+};
+
 export type Club = {
   id: string;
   name: string;
@@ -84,6 +99,17 @@ export type Station = {
   status: string;
   metadata: Record<string, unknown>;
   last_seen: string;
+};
+
+export type DiagnosticReport = {
+  id: string;
+  user_id: string;
+  operator_callsign: string;
+  instance_id: string;
+  category: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  created_at: string;
 };
 
 export type MemberDetail = {

@@ -16,15 +16,33 @@ The server rejects duplicate idempotency keys rather than silently duplicating c
 
 ## Device authentication
 
+Signed-in operators can open **Station link** in the management UI, name the
+QSONaut installation, and create a token through the browser session. The token
+is displayed once for pasting into QSONaut's Server tab. The browser uses
+`POST /api/v1/auth/device/session`; it does not expose the session cookie to the
+native client.
+
 Native clients exchange their callsign, password, and a local device name at
 `POST /api/v1/auth/device`. The returned 90-day bearer token is shown once and
 is stored only as a SHA-256 hash by the server. Password resets revoke all
 browser sessions and device tokens for that operator. A client can revoke its
 current token with `DELETE /api/v1/auth/device`.
 
-The token has fixed `events:read`, `presence:write`, `logs:write`,
+The token has fixed `events:read`, `presence:write`, `logs:write`, `diagnostics:write`,
 `messages:read`, and `messages:write` capabilities. Browser cookies are never
 copied into QSONaut configuration.
+
+The **Station link** page lists the signed-in operator's issued tokens with
+creation, expiry, and last-use timestamps. Operators may revoke a token or
+reissue it; a replacement secret is again displayed only once.
+
+## Diagnostic snapshots
+
+QSONaut may send a manually approved `diagnostic` WebSocket message containing
+bounded structured radio, audio, decoder, and latest-error state. The server
+retains these reports separately from QSO logs and exposes them only in the
+administrator Activity view. Tokens, audio samples, and configured device names
+are excluded from the client snapshot.
 
 ## Shared channels
 
