@@ -5,7 +5,7 @@
 </script>
 
 <section>
-  <div class="section-head"><div><p class="eyebrow">QSONAUT / LIVE STATION NETWORK</p><h2>Connected stations</h2></div><button onclick={refresh}>REFRESH ACTIVITY</button></div>
+  <div class="section-head"><div><p class="eyebrow">QSONAUT / LIVE STATION NETWORK</p><h2>Connected stations</h2></div><div><small>LIVE · 5 s</small> <button onclick={refresh}>REFRESH ACTIVITY</button></div></div>
   <p class="section-intro">Live operator, station, frequency, band, and mode context shared by connected QSONaut clients.</p>
   {#if stations.length === 0}
     <div class="empty-state shallow"><span>◌</span><h3>No station presence yet</h3><p>Connected QSONaut stations will appear here as operators come online.</p></div>
