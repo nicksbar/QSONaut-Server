@@ -27,6 +27,22 @@
   let logs = $state<QsoLog[]>([]);
   let messages = $state<ChannelMessage[]>([]);
   let diagnostics = $state<DiagnosticReport[]>([]);
+  let activityRefreshInFlight = false;
+
+  async function refreshActivity() {
+    if (activityRefreshInFlight || user?.global_role !== 'administrator') return;
+    activityRefreshInFlight = true;
+    try {
+      [stations, logs, messages, diagnostics] = await Promise.all([
+        api<Station[]>('/api/v1/stations'),
+        api<QsoLog[]>('/api/v1/logs'),
+        api<ChannelMessage[]>('/api/v1/channel-messages'),
+        api<DiagnosticReport[]>('/api/v1/diagnostics'),
+      ]);
+    } finally {
+      activityRefreshInFlight = false;
+    }
+  }
 
   async function load() {
     [clubs, events, templates] = await Promise.all([
@@ -35,10 +51,8 @@
       api<ContestTemplate[]>('/api/v1/contest-templates'),
     ]);
     if (user?.global_role === 'administrator') {
-      [members, stations, logs, messages, diagnostics] = await Promise.all([
-        api<User[]>('/api/v1/members'), api<Station[]>('/api/v1/stations'),
-        api<QsoLog[]>('/api/v1/logs'), api<ChannelMessage[]>('/api/v1/channel-messages'), api<DiagnosticReport[]>('/api/v1/diagnostics'),
-      ]);
+      members = await api<User[]>('/api/v1/members');
+      await refreshActivity();
     } else { members = []; stations = []; logs = []; messages = []; diagnostics = []; }
   }
 
@@ -70,7 +84,15 @@
     phase = 'login'; user = null;
   }
 
-  onMount(initialize);
+  onMount(() => {
+    void initialize();
+    const activityTimer = window.setInterval(() => {
+      if (phase === 'ready' && tab === 'activity') {
+        void refreshActivity().catch((cause) => { error = (cause as Error).message; });
+      }
+    }, 5_000);
+    return () => window.clearInterval(activityTimer);
+  });
 </script>
 
 <svelte:head><title>QSONaut Server</title></svelte:head>
@@ -105,7 +127,7 @@
       {:else if tab === 'clubs'}<ClubsPanel {clubs} currentUser={user} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} refresh={load} />
       {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
-      {:else if tab === 'activity'}<ActivityPanel {stations} {logs} {messages} {diagnostics} refresh={load} />
+      {:else if tab === 'activity'}<ActivityPanel {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} />
       {:else}<StationLinkPanel currentUser={user} />{/if}
     </main>
     <footer class="mono">QSONAUT SERVER <span>CLUBS · CONTESTS · LIVE STATIONS · SHARED LOGS</span></footer>
