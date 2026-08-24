@@ -95,6 +95,8 @@ pub struct MemberInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct MemberUpdateInput {
     pub display_name: String,
+    #[serde(default)]
+    pub global_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

@@ -353,6 +353,49 @@ impl Store {
         })
     }
 
+    pub async fn update_member_global_role(
+        &self,
+        user_id: Uuid,
+        global_role: &str,
+    ) -> Result<Option<CurrentUser>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(716736629)")
+            .execute(&mut *tx)
+            .await?;
+        if global_role == "member" {
+            let administrators: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM users WHERE global_role = 'administrator'",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            let target_is_administrator: bool = sqlx::query_scalar(
+                "SELECT global_role = 'administrator' FROM users WHERE id = $1",
+            )
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(false);
+            if target_is_administrator && administrators <= 1 {
+                tx.rollback().await?;
+                return Ok(None);
+            }
+        }
+        let row = sqlx::query_as::<_, (Uuid, String, String, String)>(
+            "UPDATE users SET global_role=$2 WHERE id=$1 RETURNING id, callsign, display_name, global_role",
+        )
+        .bind(user_id)
+        .bind(global_role)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|r| CurrentUser {
+            id: r.0,
+            callsign: r.1,
+            display_name: r.2,
+            global_role: r.3,
+        }))
+    }
+
     pub async fn update_member_password_hash(
         &self,
         user_id: Uuid,

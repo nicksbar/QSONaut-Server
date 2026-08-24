@@ -8,6 +8,7 @@
   let newPassword = $state('');
   let assignClub = $state('');
   let role = $state('operator');
+  let globalRole = $state('member');
   let memberCall = $state('');
   let memberName = $state('');
   let memberPassword = $state('');
@@ -29,6 +30,7 @@
     await run(async () => {
       selected = await api<MemberDetail>(`/api/v1/members/${id}`);
       displayName = selected.user.display_name;
+      globalRole = selected.user.global_role;
     });
   }
 
@@ -54,7 +56,7 @@
     if (!selected) return;
     await run(async () => {
       await api(`/api/v1/members/${selected!.user.id}`, {
-        method: 'PATCH', body: JSON.stringify({ display_name: displayName }),
+        method: 'PATCH', body: JSON.stringify({ display_name: displayName, global_role: globalRole }),
       });
       await refresh(); await reloadSelected(); notice = 'Operator profile updated.';
     });
@@ -116,6 +118,7 @@
       <form class="compact" onsubmit={(event) => { event.preventDefault(); saveProfile(); }}>
         <h3>Identity</h3>
         <label>Display name<input maxlength="100" bind:value={displayName} required /></label>
+        <label>Global access<select bind:value={globalRole}><option value="member">member</option><option value="administrator">administrator</option></select></label>
         <button disabled={working}>SAVE PROFILE</button>
       </form>
 

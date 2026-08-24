@@ -81,12 +81,32 @@ pub(crate) async fn update_member(
 ) -> HttpResult<Json<CurrentUser>> {
     require_admin(&state, &jar).await?;
     validate_display_name(&input.display_name)?;
+    let current = state
+        .store
+        .user(member_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    let requested_role = input.global_role.as_deref().unwrap_or(&current.global_role);
+    if !["administrator", "member"].contains(&requested_role) {
+        return Err(HttpError::bad_request("invalid global role"));
+    }
     state
         .store
         .update_member_display_name(member_id, input.display_name.trim())
         .await?
-        .map(Json)
-        .ok_or_else(HttpError::not_found)
+        .ok_or_else(HttpError::not_found)?;
+    let updated = state
+        .store
+        .update_member_global_role(member_id, requested_role)
+        .await?
+        .ok_or_else(|| {
+            if current.global_role == "administrator" && requested_role == "member" {
+                HttpError::conflict("the server must keep at least one administrator")
+            } else {
+                HttpError::not_found()
+            }
+        })?;
+    Ok(Json(updated))
 }
 #[utoipa::path(post, path = "/api/v1/members/{member_id}/password", tag = "management", params(("member_id" = Uuid, Path)), request_body = PasswordResetInput, responses((status = 204, description = "Password changed and existing sessions revoked")))]
 pub(crate) async fn reset_member_password(
@@ -281,7 +301,8 @@ pub(crate) async fn club_governance(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<ClubGovernance>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_club_manager(&state, &user, club_id).await?;
     Ok(Json(state.store.club_governance(club_id).await?))
 }
 
