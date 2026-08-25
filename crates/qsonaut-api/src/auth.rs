@@ -464,7 +464,7 @@ async fn verify_credentials(state: &AppState, input: Credentials) -> HttpResult<
     };
     let password = input.password;
     let valid = tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&hash).ok().is_some_and(|parsed| {
+        PasswordHash::new(&hash).is_ok_and(|parsed| {
             Argon2::default()
                 .verify_password(password.as_bytes(), &parsed)
                 .is_ok()
