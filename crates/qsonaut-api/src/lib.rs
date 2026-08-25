@@ -178,7 +178,6 @@ pub fn router_with_store_and_policy(
             "/api/v1/auth/setup",
             get(auth::setup_status).post(auth::bootstrap),
         )
-        .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
