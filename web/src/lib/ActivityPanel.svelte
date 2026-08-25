@@ -1,8 +1,9 @@
 <script lang="ts">
   import { api, formatFrequency } from './api';
-  import type { ChannelMessage, DiagnosticReport, QsoLog, ShareLinkRecord, Station } from './types';
+  import type { ChannelMessage, DiagnosticReport, QsoLog, ServerCapabilities, ShareLinkRecord, Station } from './types';
   import { onMount } from 'svelte';
-  let { administrator, stations, logs, messages, diagnostics, refresh }: { administrator: boolean; stations: Station[]; logs: QsoLog[]; messages: ChannelMessage[]; diagnostics: DiagnosticReport[]; refresh: () => Promise<void> } = $props();
+  let { administrator, capabilities, stations, logs, messages, diagnostics, refresh }: { administrator: boolean; capabilities: ServerCapabilities; stations: Station[]; logs: QsoLog[]; messages: ChannelMessage[]; diagnostics: DiagnosticReport[]; refresh: () => Promise<void> } = $props();
+  let externalSharingEnabled = $derived(capabilities.features.includes('external sharing'));
   let shareStatus = $state('');
   let shares = $state<ShareLinkRecord[]>([]);
   let stationSearch = $state('');
@@ -37,6 +38,7 @@
   }));
 
   async function loadShares() {
+    if (!externalSharingEnabled) return;
     shares = await api<ShareLinkRecord[]>('/api/v1/shares');
   }
 
@@ -63,7 +65,7 @@
     }
   }
 
-  onMount(() => { void loadShares(); });
+  onMount(() => { if (externalSharingEnabled) void loadShares(); });
 
 </script>
 
@@ -114,17 +116,19 @@
   {#if logs.length === 0}
     <div class="empty-state shallow"><span>≋</span><h3>No uploaded logs</h3><p>Logs will appear here when an authenticated QSONaut client submits its idempotent QSO records. Manual logging remains in QSONaut.</p></div>
   {:else}
-    {#if visibleLogs.length === 0}<p class="empty">No logs match the current filters.</p>{:else}<div class="table-wrap"><table><thead><tr><th>UTC</th><th>Operator</th><th>Worked</th><th>Band</th><th>Mode</th><th>Frequency</th><th>Event</th><th>Source</th><th></th></tr></thead><tbody>{#each visibleLogs as log}<tr><td>{new Date(log.occurred_at).toISOString().replace('T', ' ').slice(0, 19)}</td><td>{log.operator_callsign}</td><td><b>{log.callsign}</b></td><td>{log.band}</td><td>{log.mode}</td><td>{formatFrequency(log.frequency_hz)}</td><td>{log.event_name || '—'}</td><td>{log.source}</td><td><button onclick={() => copyShareLink(log)}>COPY LINK</button></td></tr>{/each}</tbody></table></div>{/if}
+    {#if visibleLogs.length === 0}<p class="empty">No logs match the current filters.</p>{:else}<div class="table-wrap"><table><thead><tr><th>UTC</th><th>Operator</th><th>Worked</th><th>Band</th><th>Mode</th><th>Frequency</th><th>Event</th><th>Source</th>{#if externalSharingEnabled}<th></th>{/if}</tr></thead><tbody>{#each visibleLogs as log}<tr><td>{new Date(log.occurred_at).toISOString().replace('T', ' ').slice(0, 19)}</td><td>{log.operator_callsign}</td><td><b>{log.callsign}</b></td><td>{log.band}</td><td>{log.mode}</td><td>{formatFrequency(log.frequency_hz)}</td><td>{log.event_name || '—'}</td><td>{log.source}</td>{#if externalSharingEnabled}<td><button onclick={() => copyShareLink(log)}>COPY LINK</button></td>{/if}</tr>{/each}</tbody></table></div>{/if}
   {/if}
 
-  <div class="section-head"><div><p class="eyebrow">SHARING / ACTIVE LINKS</p><h2>Copyable detail links</h2></div><b>{visibleShares.length} of {shares.length}</b></div>
-  <div class="list-tools"><select aria-label="Filter share links" bind:value={shareFilter}><option value="active">Active links</option><option value="expired">Expired links</option><option value="revoked">Revoked links</option><option value="all">All links</option></select></div>
-  {#if shares.length === 0}
-    <p class="section-intro">Create a link from any QSO record above. Links expire automatically and can be revoked here.</p>
-  {:else if visibleShares.length === 0}
-    <p class="empty">No share links match this filter.</p>
-  {:else}
-    <div class="share-list">{#each visibleShares as share}<article><div><b>{share.worked_callsign}</b><small>{new Date(share.occurred_at).toLocaleString()} · expires {new Date(share.expires_at).toLocaleDateString()}</small></div>{#if share.revoked_at}<span class="pill">revoked</span>{:else if new Date(share.expires_at) <= new Date()}<span class="pill">expired</span>{:else}<button onclick={() => void revokeShare(share.id)}>REVOKE</button>{/if}</article>{/each}</div>
+  {#if externalSharingEnabled}
+    <div class="section-head"><div><p class="eyebrow">SHARING / ACTIVE LINKS</p><h2>Copyable detail links</h2></div><b>{visibleShares.length} of {shares.length}</b></div>
+    <div class="list-tools"><select aria-label="Filter share links" bind:value={shareFilter}><option value="active">Active links</option><option value="expired">Expired links</option><option value="revoked">Revoked links</option><option value="all">All links</option></select></div>
+    {#if shares.length === 0}
+      <p class="section-intro">Create a link from any QSO record above. Links expire automatically and can be revoked here.</p>
+    {:else if visibleShares.length === 0}
+      <p class="empty">No share links match this filter.</p>
+    {:else}
+      <div class="share-list">{#each visibleShares as share}<article><div><b>{share.worked_callsign}</b><small>{new Date(share.occurred_at).toLocaleString()} · expires {new Date(share.expires_at).toLocaleDateString()}</small></div>{#if share.revoked_at}<span class="pill">revoked</span>{:else if new Date(share.expires_at) <= new Date()}<span class="pill">expired</span>{:else}<button onclick={() => void revokeShare(share.id)}>REVOKE</button>{/if}</article>{/each}</div>
+    {/if}
   {/if}
 </section>
 

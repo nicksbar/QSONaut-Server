@@ -22,18 +22,9 @@ Roster records include:
 These fields are deliberately independent. A club can track renewals without
 tracking money, and a lapsed record remains available for history and follow-up.
 
-## Governance and elections
+## Hosted organizational governance
 
-Owners define officer and board positions with a seat count, term length, and
-annual, even-year, or odd-year election cadence. Position assignments record
-the member, seat, start/end dates, and whether the term was elected, appointed,
-or acting. Multiple seats and overlapping terms are represented explicitly.
-
-Election cycles record a year, workflow state, optional opening/closing times,
-and the positions included in that cycle. This supports planning, nominations,
-voting windows, closure, and certification calendars.
-
-Secret ballot casting is intentionally a separate future layer. It needs
-eligibility snapshots, one-ballot enforcement, ballot secrecy, recount rules,
-and an auditable certification process; those guarantees should not be faked by
-ordinary roster-edit permissions.
+Board positions, officer assignments, election cycles, voting, and certification
+are intentionally not part of the public server. They are supplied by the
+private hosted companion. The public server keeps club identity, membership,
+rosters, join requests, and activity setup.
