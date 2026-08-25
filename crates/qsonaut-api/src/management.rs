@@ -15,10 +15,8 @@ use axum_extra::extract::cookie::CookieJar;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, Utc};
 use qsonaut_protocol::{
-    ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club,
-    ClubElection, ClubElectionInput, ClubElectionStatusInput, ClubGovernance, ClubInput,
-    ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition,
-    ClubPositionAssignment, ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate,
+    ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club, ClubInput,
+    ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
     CurrentUser, DiagnosticReport, Event, EventInput, EventStatusInput, EventUpdateInput,
     MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput,
     ShareLink, ShareLinkInput, ShareLinkRecord, SharedQsoDetail, StationPresence,
@@ -248,6 +246,29 @@ pub(crate) async fn create_club(
     Ok(Json(club))
 }
 
+#[utoipa::path(patch, path = "/api/v1/clubs/{club_id}", tag = "management", params(("club_id" = Uuid, Path)), request_body = ClubInput, responses((status = 200, body = Club), (status = 404, description = "Club not found or not manageable")))]
+pub(crate) async fn update_club(
+    Path(club_id): Path<Uuid>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(mut input): Json<ClubInput>,
+) -> HttpResult<Json<Club>> {
+    let user = require_user(&state, &jar).await?;
+    if input.name.trim().is_empty() {
+        return Err(HttpError::bad_request("club name is required"));
+    }
+    input.callsign = input
+        .callsign
+        .map(|call| call.trim().to_ascii_uppercase())
+        .filter(|call| !call.is_empty());
+    state
+        .store
+        .update_club(club_id, user.id, &input)
+        .await?
+        .map(Json)
+        .ok_or_else(HttpError::not_found)
+}
+
 #[utoipa::path(post, path = "/api/v1/clubs/{club_id}/join-requests", tag = "management", params(("club_id" = Uuid, Path)), responses((status = 200, body = ClubJoinRequest)))]
 pub(crate) async fn request_club_join(
     Path(club_id): Path<Uuid>,
@@ -306,143 +327,6 @@ pub(crate) async fn review_club_join_request(
         .ok_or_else(|| HttpError::conflict("join request is no longer pending"))
 }
 
-#[utoipa::path(get, path = "/api/v1/clubs/{club_id}/governance", tag = "management", params(("club_id" = Uuid, Path)), responses((status = 200, body = ClubGovernance)))]
-pub(crate) async fn club_governance(
-    Path(club_id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> HttpResult<Json<ClubGovernance>> {
-    let user = require_user(&state, &jar).await?;
-    require_club_manager(&state, &user, club_id).await?;
-    Ok(Json(state.store.club_governance(club_id).await?))
-}
-
-#[utoipa::path(post, path = "/api/v1/clubs/{club_id}/positions", tag = "management", params(("club_id" = Uuid, Path)), request_body = ClubPositionInput, responses((status = 200, body = ClubPosition)))]
-pub(crate) async fn create_club_position(
-    Path(club_id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(input): Json<ClubPositionInput>,
-) -> HttpResult<Json<ClubPosition>> {
-    let user = require_user(&state, &jar).await?;
-    require_club_owner(&state, &user, club_id).await?;
-    if input.name.trim().is_empty() {
-        return Err(HttpError::bad_request("position name is required"));
-    }
-    if !["officer", "board"].contains(&input.position_type.as_str())
-        || !["any", "even", "odd"].contains(&input.election_parity.as_str())
-        || !(1..=100).contains(&input.seats)
-        || !(1..=10).contains(&input.term_years)
-    {
-        return Err(HttpError::bad_request("invalid position configuration"));
-    }
-    Ok(Json(
-        state.store.create_club_position(club_id, &input).await?,
-    ))
-}
-
-#[utoipa::path(post, path = "/api/v1/clubs/{club_id}/position-assignments", tag = "management", params(("club_id" = Uuid, Path)), request_body = ClubPositionAssignmentInput, responses((status = 200, body = ClubPositionAssignment)))]
-pub(crate) async fn assign_club_position(
-    Path(club_id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(input): Json<ClubPositionAssignmentInput>,
-) -> HttpResult<Json<ClubPositionAssignment>> {
-    let user = require_user(&state, &jar).await?;
-    require_club_owner(&state, &user, club_id).await?;
-    if input.ends_on < input.starts_on
-        || input.seat_number < 1
-        || !["elected", "appointed", "acting"].contains(&input.selection_method.as_str())
-    {
-        return Err(HttpError::bad_request("invalid position assignment"));
-    }
-    Ok(Json(
-        state.store.assign_club_position(club_id, &input).await?,
-    ))
-}
-
-#[utoipa::path(post, path = "/api/v1/clubs/{club_id}/elections", tag = "management", params(("club_id" = Uuid, Path)), request_body = ClubElectionInput, responses((status = 200, body = ClubElection)))]
-pub(crate) async fn create_club_election(
-    Path(club_id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(input): Json<ClubElectionInput>,
-) -> HttpResult<Json<ClubElection>> {
-    let user = require_user(&state, &jar).await?;
-    require_club_owner(&state, &user, club_id).await?;
-    if input.title.trim().is_empty()
-        || !(2000..=2200).contains(&input.election_year)
-        || ![
-            "planned",
-            "nominations",
-            "voting",
-            "closed",
-            "certified",
-            "cancelled",
-        ]
-        .contains(&input.status.as_str())
-        || input
-            .opens_at
-            .zip(input.closes_at)
-            .is_some_and(|(opens, closes)| closes <= opens)
-    {
-        return Err(HttpError::bad_request("invalid election configuration"));
-    }
-    let governance = state.store.club_governance(club_id).await?;
-    for position_id in &input.position_ids {
-        let position = governance
-            .positions
-            .iter()
-            .find(|position| position.id == *position_id)
-            .ok_or_else(|| HttpError::bad_request("election contains an unknown position"))?;
-        let year_parity = if input.election_year % 2 == 0 {
-            "even"
-        } else {
-            "odd"
-        };
-        if position.election_parity != "any" && position.election_parity != year_parity {
-            return Err(HttpError::bad_request(format!(
-                "{} is configured for {}-year elections",
-                position.name, position.election_parity
-            )));
-        }
-    }
-    Ok(Json(
-        state
-            .store
-            .create_club_election(club_id, user.id, &input)
-            .await?,
-    ))
-}
-
-#[utoipa::path(patch, path = "/api/v1/clubs/{club_id}/elections/{election_id}", tag = "management", params(("club_id" = Uuid, Path), ("election_id" = Uuid, Path)), request_body = ClubElectionStatusInput, responses((status = 200, body = ClubElection)))]
-pub(crate) async fn set_club_election_status(
-    Path((club_id, election_id)): Path<(Uuid, Uuid)>,
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(input): Json<ClubElectionStatusInput>,
-) -> HttpResult<Json<ClubElection>> {
-    let user = require_user(&state, &jar).await?;
-    require_club_owner(&state, &user, club_id).await?;
-    if ![
-        "planned",
-        "nominations",
-        "voting",
-        "closed",
-        "certified",
-        "cancelled",
-    ]
-    .contains(&input.status.as_str())
-    {
-        return Err(HttpError::bad_request("invalid election status"));
-    }
-    state
-        .store
-        .set_club_election_status(club_id, election_id, &input.status)
-        .await?
-        .map(Json)
-        .ok_or_else(HttpError::not_found)
-}
 #[utoipa::path(get, path = "/api/v1/contest-templates", tag = "management", responses((status = 200, body = [ContestTemplate])))]
 pub(crate) async fn contest_templates(
     State(state): State<AppState>,
@@ -841,6 +725,7 @@ pub(crate) async fn create_log_share(
     jar: CookieJar,
     Json(input): Json<ShareLinkInput>,
 ) -> HttpResult<Json<ShareLink>> {
+    require_external_sharing(&state)?;
     let user = require_user(&state, &jar).await?;
     let owner = state
         .store
@@ -891,6 +776,7 @@ pub(crate) async fn shared_log(
     Path(token): Path<String>,
     State(state): State<AppState>,
 ) -> HttpResult<Json<SharedQsoDetail>> {
+    require_external_sharing(&state)?;
     let log = state
         .store
         .shared_qso_log(&token_hash(&token))
@@ -911,6 +797,7 @@ pub(crate) async fn revoke_log_share(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<StatusCode> {
+    require_external_sharing(&state)?;
     let user = require_user(&state, &jar).await?;
     if !state
         .store
@@ -937,8 +824,17 @@ pub(crate) async fn log_shares(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<ShareLinkRecord>>> {
+    require_external_sharing(&state)?;
     let user = require_user(&state, &jar).await?;
     Ok(Json(state.store.qso_share_links_for_user(user.id).await?))
+}
+
+fn require_external_sharing(state: &AppState) -> HttpResult<()> {
+    if state.policy.has_feature("external sharing") {
+        Ok(())
+    } else {
+        Err(HttpError::not_found())
+    }
 }
 
 fn validate_contest_configuration(
@@ -1015,17 +911,6 @@ async fn require_club_manager(
         is_administrator,
         role,
     })
-}
-
-async fn require_club_owner(state: &AppState, user: &CurrentUser, club_id: Uuid) -> HttpResult<()> {
-    if user.global_role == "administrator"
-        || state.store.club_role(club_id, user.id).await?.as_deref() == Some("owner")
-    {
-        return Ok(());
-    }
-    Err(HttpError::forbidden_with(
-        "club owner access required for governance changes",
-    ))
 }
 
 fn enforce_club_role_assignment(

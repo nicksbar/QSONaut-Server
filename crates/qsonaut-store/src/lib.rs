@@ -4,12 +4,10 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use qsonaut_protocol::{
     AccessRequest, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
-    ChannelMessageInput, Club, ClubElection, ClubElectionInput, ClubGovernance, ClubInput,
-    ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition, ClubPositionAssignment,
-    ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate, CurrentUser, DiagnosticReport,
-    DiagnosticReportInput, Event, EventInput, EventStatus, EventUpdateInput, MemberClubRole,
-    ProfileUpdateInput, QsoLog, QsoLogInput, ShareLinkRecord, StationPresence,
-    StationPresenceInput, UserProfile,
+    ChannelMessageInput, Club, ClubInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
+    ContestTemplate, CurrentUser, DiagnosticReport, DiagnosticReportInput, Event, EventInput,
+    EventStatus, EventUpdateInput, MemberClubRole, ProfileUpdateInput, QsoLog, QsoLogInput,
+    ShareLinkRecord, StationPresence, StationPresenceInput, UserProfile,
 };
 use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -256,35 +254,6 @@ struct ClubJoinRequestRow {
     requested_at: DateTime<Utc>,
     reviewed_at: Option<DateTime<Utc>>,
     reviewed_by: Option<Uuid>,
-}
-
-#[derive(sqlx::FromRow)]
-struct ClubElectionRow {
-    id: Uuid,
-    club_id: Uuid,
-    title: String,
-    election_year: i32,
-    status: String,
-    opens_at: Option<DateTime<Utc>>,
-    closes_at: Option<DateTime<Utc>>,
-    notes: String,
-    position_ids: Vec<Uuid>,
-}
-
-impl From<ClubElectionRow> for ClubElection {
-    fn from(row: ClubElectionRow) -> Self {
-        Self {
-            id: row.id,
-            club_id: row.club_id,
-            title: row.title,
-            election_year: row.election_year,
-            status: row.status,
-            opens_at: row.opens_at,
-            closes_at: row.closes_at,
-            notes: row.notes,
-            position_ids: row.position_ids,
-        }
-    }
 }
 
 impl From<ClubJoinRequestRow> for ClubJoinRequest {
@@ -1172,112 +1141,31 @@ impl Store {
         }))
     }
 
-    pub async fn club_governance(&self, club_id: Uuid) -> Result<ClubGovernance, sqlx::Error> {
-        let positions = sqlx::query_as::<_, (Uuid, Uuid, String, String, i32, i32, String, String)>("SELECT id,club_id,name,position_type,seats,term_years,election_parity,description FROM club_positions WHERE club_id=$1 ORDER BY position_type,name")
-            .bind(club_id).fetch_all(&self.pool).await?.into_iter().map(|r| ClubPosition { id:r.0, club_id:r.1, name:r.2, position_type:r.3, seats:r.4, term_years:r.5, election_parity:r.6, description:r.7 }).collect();
-        let assignments = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, i32, NaiveDate, NaiveDate, String)>("SELECT a.id,a.position_id,a.user_id,u.callsign,u.display_name,a.seat_number,a.starts_on,a.ends_on,a.selection_method FROM club_position_assignments a JOIN club_positions p ON p.id=a.position_id JOIN users u ON u.id=a.user_id WHERE p.club_id=$1 ORDER BY a.ends_on DESC,p.name,a.seat_number")
-            .bind(club_id).fetch_all(&self.pool).await?.into_iter().map(|r| ClubPositionAssignment { id:r.0, position_id:r.1, user_id:r.2, callsign:r.3, display_name:r.4, seat_number:r.5, starts_on:r.6, ends_on:r.7, selection_method:r.8 }).collect();
-        let elections = sqlx::query_as::<_, ClubElectionRow>("SELECT e.id,e.club_id,e.title,e.election_year,e.status,e.opens_at,e.closes_at,e.notes,COALESCE(array_agg(ep.position_id) FILTER (WHERE ep.position_id IS NOT NULL),'{}') AS position_ids FROM club_elections e LEFT JOIN club_election_positions ep ON ep.election_id=e.id WHERE e.club_id=$1 GROUP BY e.id ORDER BY e.election_year DESC,e.created_at DESC")
-            .bind(club_id).fetch_all(&self.pool).await?.into_iter().map(ClubElection::from).collect();
-        Ok(ClubGovernance {
-            positions,
-            assignments,
-            elections,
-        })
-    }
-
-    pub async fn create_club_position(
+    pub async fn update_club(
         &self,
         club_id: Uuid,
-        input: &ClubPositionInput,
-    ) -> Result<ClubPosition, sqlx::Error> {
-        let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, i32, i32, String, String)>("INSERT INTO club_positions (id,club_id,name,position_type,seats,term_years,election_parity,description) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,club_id,name,position_type,seats,term_years,election_parity,description")
-            .bind(Uuid::new_v4()).bind(club_id).bind(input.name.trim()).bind(&input.position_type).bind(input.seats).bind(input.term_years).bind(&input.election_parity).bind(input.description.trim()).fetch_one(&self.pool).await?;
-        Ok(ClubPosition {
-            id: row.0,
-            club_id: row.1,
-            name: row.2,
-            position_type: row.3,
-            seats: row.4,
-            term_years: row.5,
-            election_parity: row.6,
-            description: row.7,
-        })
-    }
-
-    pub async fn assign_club_position(
-        &self,
-        club_id: Uuid,
-        input: &ClubPositionAssignmentInput,
-    ) -> Result<ClubPositionAssignment, sqlx::Error> {
-        let row = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, i32, NaiveDate, NaiveDate, String)>("WITH inserted AS (INSERT INTO club_position_assignments (id,position_id,user_id,seat_number,starts_on,ends_on,selection_method) SELECT $1,p.id,$3,$4,$5,$6,$7 FROM club_positions p JOIN club_members cm ON cm.club_id=p.club_id AND cm.user_id=$3 WHERE p.id=$2 AND p.club_id=$8 AND cm.membership_status='active' AND $4 <= p.seats AND NOT EXISTS (SELECT 1 FROM club_position_assignments existing WHERE existing.position_id=p.id AND existing.seat_number=$4 AND daterange(existing.starts_on,existing.ends_on,'[]') && daterange($5,$6,'[]')) RETURNING id,position_id,user_id,seat_number,starts_on,ends_on,selection_method) SELECT a.id,a.position_id,a.user_id,u.callsign,u.display_name,a.seat_number,a.starts_on,a.ends_on,a.selection_method FROM inserted a JOIN users u ON u.id=a.user_id")
-            .bind(Uuid::new_v4()).bind(input.position_id).bind(input.user_id).bind(input.seat_number).bind(input.starts_on).bind(input.ends_on).bind(&input.selection_method).bind(club_id).fetch_one(&self.pool).await?;
-        Ok(ClubPositionAssignment {
-            id: row.0,
-            position_id: row.1,
-            user_id: row.2,
-            callsign: row.3,
-            display_name: row.4,
-            seat_number: row.5,
-            starts_on: row.6,
-            ends_on: row.7,
-            selection_method: row.8,
-        })
-    }
-
-    pub async fn create_club_election(
-        &self,
-        club_id: Uuid,
-        creator_id: Uuid,
-        input: &ClubElectionInput,
-    ) -> Result<ClubElection, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
-        let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO club_elections (id,club_id,title,election_year,status,opens_at,closes_at,notes,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
-            .bind(id).bind(club_id).bind(input.title.trim()).bind(input.election_year).bind(&input.status).bind(input.opens_at).bind(input.closes_at).bind(input.notes.trim()).bind(creator_id).execute(&mut *tx).await?;
-        for position_id in &input.position_ids {
-            let inserted = sqlx::query("INSERT INTO club_election_positions (election_id,position_id) SELECT $1,id FROM club_positions WHERE id=$2 AND club_id=$3")
-                .bind(id).bind(position_id).bind(club_id).execute(&mut *tx).await?;
-            if inserted.rows_affected() == 0 {
-                tx.rollback().await?;
-                return Err(sqlx::Error::RowNotFound);
-            }
-        }
-        tx.commit().await?;
-        Ok(ClubElection {
-            id,
-            club_id,
-            title: input.title.trim().to_owned(),
-            election_year: input.election_year,
-            status: input.status.clone(),
-            opens_at: input.opens_at,
-            closes_at: input.closes_at,
-            notes: input.notes.trim().to_owned(),
-            position_ids: input.position_ids.clone(),
-        })
-    }
-
-    pub async fn set_club_election_status(
-        &self,
-        club_id: Uuid,
-        election_id: Uuid,
-        status: &str,
-    ) -> Result<Option<ClubElection>, sqlx::Error> {
-        let updated = sqlx::query("UPDATE club_elections SET status=$3 WHERE id=$1 AND club_id=$2")
-            .bind(election_id)
-            .bind(club_id)
-            .bind(status)
-            .execute(&self.pool)
-            .await?;
-        if updated.rows_affected() == 0 {
+        viewer_id: Uuid,
+        input: &ClubInput,
+    ) -> Result<Option<Club>, sqlx::Error> {
+        let updated = sqlx::query(
+            "UPDATE clubs SET name=$3, callsign=$4, description=$5, updated_at=now() WHERE id=$1 AND EXISTS (SELECT 1 FROM club_members WHERE club_id=$1 AND user_id=$2 AND role IN ('owner','coordinator'))",
+        )
+        .bind(club_id)
+        .bind(viewer_id)
+        .bind(input.name.trim())
+        .bind(input.callsign.as_deref())
+        .bind(input.description.trim())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if updated == 0 {
             return Ok(None);
         }
-        self.club_governance(club_id).await.map(|governance| {
-            governance
-                .elections
-                .into_iter()
-                .find(|election| election.id == election_id)
-        })
+        Ok(self
+            .clubs(viewer_id, false)
+            .await?
+            .into_iter()
+            .find(|club| club.id == club_id))
     }
 
     pub async fn contest_templates(&self) -> Result<Vec<ContestTemplate>, sqlx::Error> {

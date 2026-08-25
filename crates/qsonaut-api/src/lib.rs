@@ -13,16 +13,14 @@ use axum::{
 use qsonaut_protocol::{
     API_VERSION, AccessCallsignLookup, AccessChallenge, AccessDecisionResult, AccessRequest,
     AccessRequestDecisionInput, AccessRequestInput, ActivitySummary, ActivityVisibility,
-    ActivityVisibilityInput, ApiError, BootstrapRequest, ChannelMessage, Club, ClubElection,
-    ClubElectionInput, ClubElectionStatusInput, ClubGovernance, ClubInput, ClubJoinDecisionInput,
-    ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition, ClubPositionAssignment,
-    ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate, Credentials, CurrentUser,
-    DeviceCredentials, DeviceRegistration, DeviceToken, DeviceTokenRecord, DiagnosticReport,
-    DiagnosticReportInput, Event, EventInput, EventStatus, EventStatusInput, EventUpdateInput,
-    HealthResponse, MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput,
-    PasswordResetInput, ProfileUpdateInput, QsoLog, QsoLogInput, ServerCapabilities, ServiceInfo,
-    ServiceStatus, SetupStatus, ShareLink, ShareLinkInput, ShareLinkRecord, SharedQsoDetail,
-    StationPresence, StationPresenceInput, UserProfile,
+    ActivityVisibilityInput, ApiError, BootstrapRequest, ChannelMessage, Club, ClubInput,
+    ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
+    Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
+    DeviceTokenRecord, DiagnosticReport, DiagnosticReportInput, Event, EventInput, EventStatus,
+    EventStatusInput, EventUpdateInput, HealthResponse, MemberClubRole, MemberDetail, MemberInput,
+    MemberUpdateInput, PasswordResetInput, ProfileUpdateInput, QsoLog, QsoLogInput,
+    ServerCapabilities, ServiceInfo, ServiceStatus, SetupStatus, ShareLink, ShareLinkInput,
+    ShareLinkRecord, SharedQsoDetail, StationPresence, StationPresenceInput, UserProfile,
 };
 use qsonaut_store::Store;
 use utoipa::OpenApi;
@@ -30,21 +28,14 @@ use utoipa::OpenApi;
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        health, service_info, capabilities, access::challenge, access::lookup_callsign, access::submit,
-        access::list, access::decide,
+        health, service_info, capabilities, access::challenge, access::lookup_callsign, access::submit, access::list, access::decide,
         auth::setup_status, auth::bootstrap, auth::login, auth::me, auth::update_me, auth::profile, auth::update_profile, auth::refresh_hamdb_profile, auth::update_my_password, auth::logout,
         auth::device_login, auth::register_session_device, auth::session_devices,
         auth::reissue_session_device, auth::revoke_session_device, auth::revoke_device,
-        management::members, management::create_member,
-        management::member_detail, management::update_member, management::reset_member_password,
-        management::club_members, management::set_club_member,
-        management::remove_club_member,
-        management::request_club_join, management::club_join_requests,
-        management::review_club_join_request,
-        management::club_governance, management::create_club_position,
-        management::assign_club_position, management::create_club_election,
-        management::set_club_election_status,
-        management::clubs, management::create_club,
+        management::members, management::create_member, management::member_detail, management::update_member, management::reset_member_password,
+        management::club_members, management::set_club_member, management::remove_club_member,
+        management::clubs, management::create_club, management::update_club,
+        management::request_club_join, management::club_join_requests, management::review_club_join_request,
         management::contest_templates,
         management::events, management::create_event, management::update_event, management::set_event_status,
         management::stations, management::publish_station_presence, management::channel_messages,
@@ -56,11 +47,7 @@ use utoipa::OpenApi;
         DeviceCredentials, DeviceRegistration, DeviceToken, DeviceTokenRecord,
         BootstrapRequest, CurrentUser, AccessChallenge, AccessCallsignLookup, AccessRequest,
         AccessDecisionResult, AccessRequestInput, AccessRequestDecisionInput, MemberInput,
-        ClubMembership, ClubMembershipInput,
-        ClubJoinRequest, ClubJoinDecisionInput,
-        ClubGovernance, ClubPosition, ClubPositionInput,
-        ClubPositionAssignment, ClubPositionAssignmentInput, ClubElection, ClubElectionInput,
-        ClubElectionStatusInput,
+        ClubMembership, ClubMembershipInput, ClubJoinRequest, ClubJoinDecisionInput,
         MemberUpdateInput, PasswordResetInput, ProfileUpdateInput, UserProfile, ActivitySummary, ActivityVisibility, ActivityVisibilityInput, MemberClubRole, MemberDetail, ShareLinkInput, ShareLinkRecord,
         ShareLink, SharedQsoDetail,
         Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventUpdateInput, EventStatusInput, ChannelMessage,
@@ -132,6 +119,11 @@ impl ServerPolicy {
             max_clubs: self.max_clubs,
             features: self.features.clone(),
         }
+    }
+
+    #[must_use]
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|item| item == feature)
     }
 }
 
@@ -226,15 +218,7 @@ pub fn router_with_store_and_policy(
             "/api/v1/clubs",
             get(management::clubs).post(management::create_club),
         )
-        .route(
-            "/api/v1/events",
-            get(management::events).post(management::create_event),
-        )
-        .route(
-            "/api/v1/events/{event_id}/status",
-            patch(management::set_event_status),
-        )
-        .route("/api/v1/events/{event_id}", patch(management::update_event))
+        .route("/api/v1/clubs/{club_id}", patch(management::update_club))
         .route(
             "/api/v1/members",
             get(management::members).post(management::create_member),
@@ -256,32 +240,21 @@ pub fn router_with_store_and_policy(
             axum::routing::delete(management::remove_club_member),
         )
         .route(
+            "/api/v1/events",
+            get(management::events).post(management::create_event),
+        )
+        .route(
+            "/api/v1/events/{event_id}/status",
+            patch(management::set_event_status),
+        )
+        .route("/api/v1/events/{event_id}", patch(management::update_event))
+        .route(
             "/api/v1/clubs/{club_id}/join-requests",
             get(management::club_join_requests).post(management::request_club_join),
         )
         .route(
             "/api/v1/clubs/{club_id}/join-requests/{request_id}",
             patch(management::review_club_join_request),
-        )
-        .route(
-            "/api/v1/clubs/{club_id}/governance",
-            get(management::club_governance),
-        )
-        .route(
-            "/api/v1/clubs/{club_id}/positions",
-            post(management::create_club_position),
-        )
-        .route(
-            "/api/v1/clubs/{club_id}/position-assignments",
-            post(management::assign_club_position),
-        )
-        .route(
-            "/api/v1/clubs/{club_id}/elections",
-            post(management::create_club_election),
-        )
-        .route(
-            "/api/v1/clubs/{club_id}/elections/{election_id}",
-            patch(management::set_club_election_status),
         )
         .route(
             "/api/v1/contest-templates",
@@ -343,7 +316,7 @@ async fn service_info() -> Json<ServiceInfo> {
         api_version: API_VERSION.to_owned(),
         purpose: "Group-event management, coordination, and synchronization".to_owned(),
         manages: vec![
-            "clubs and membership".to_owned(),
+            "clubs and shared activity spaces".to_owned(),
             "events and contest setup".to_owned(),
             "shared logs and reports".to_owned(),
             "chat and presence".to_owned(),
@@ -449,16 +422,12 @@ mod tests {
             "/api/v1/auth/devices/{token_id}",
             "/api/v1/auth/devices/{token_id}/reissue",
             "/api/v1/clubs",
+            "/api/v1/clubs/{club_id}",
             "/api/v1/members",
             "/api/v1/members/{member_id}",
             "/api/v1/clubs/{club_id}/members/{member_id}",
             "/api/v1/clubs/{club_id}/join-requests",
             "/api/v1/clubs/{club_id}/join-requests/{request_id}",
-            "/api/v1/clubs/{club_id}/governance",
-            "/api/v1/clubs/{club_id}/positions",
-            "/api/v1/clubs/{club_id}/position-assignments",
-            "/api/v1/clubs/{club_id}/elections",
-            "/api/v1/clubs/{club_id}/elections/{election_id}",
             "/api/v1/contest-templates",
             "/api/v1/events",
             "/api/v1/events/{event_id}/status",

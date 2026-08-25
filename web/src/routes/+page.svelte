@@ -77,8 +77,10 @@
       api<ServerCapabilities>('/api/v1/capabilities'),
     ]);
     if (user?.global_role === 'administrator') {
-      members = await api<User[]>('/api/v1/members');
-      accessRequests = await api<AccessRequest[]>('/api/v1/access/requests');
+      [members, accessRequests] = await Promise.all([
+        api<User[]>('/api/v1/members'),
+        api<AccessRequest[]>('/api/v1/access/requests'),
+      ]);
       await refreshActivity();
     } else {
       members = []; accessRequests = []; stations = []; messages = []; diagnostics = [];
@@ -288,6 +290,9 @@
         <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{clubs.filter((club) => club.my_role).length}</b>MY CLUBS</article><article><b>{clubs.filter((club) => club.can_manage).reduce((sum, club) => sum + club.renewal_attention_count, 0)}</b>RENEWALS DUE</article><article><b>{events.filter((event) => event.status === 'scheduled').length}</b>UPCOMING</article></div>
         <ActivitySummaryPanel {clubs} {events} /><ActivityVisibilityPanel {clubs} {events} />
         <div class="boundary"><b>One home for group operations.</b><p>Configure contests, coordinate operators, follow station activity, collect logs, and build club reports.</p></div>
+        {#if capabilities.edition !== 'community'}
+          <div class="boundary hosted-boundary"><b>HOSTED EXTENSIONS · {capabilities.edition.toUpperCase()}</b><p>{capabilities.features.length} hosted capabilities are active.</p><div class="feature-list">{#each capabilities.features as feature}<span class="pill">{feature}</span>{/each}</div></div>
+        {/if}
       {:else if tab === 'profile'}
         <section class="profile-panel"><p class="eyebrow amber">OPERATOR / IDENTITY</p><h2>{user?.callsign}</h2><p class="lede">Your operator identity powers individual activity, club participation, and contest reporting. License and address details stay in your private profile unless a future sharing surface explicitly says otherwise.</p><ActivitySummaryPanel {clubs} {events} />
           {#if profile}<form class="profile-form" onsubmit={(event) => { event.preventDefault(); void saveProfile(); }}><div class="profile-section"><div><p class="eyebrow cyan">IDENTITY</p><h3>Operator profile</h3></div><button type="button" class="secondary" onclick={refreshHamdb} disabled={profileBusy}>↻ REFRESH FROM HAMDB</button><label>Callsign<input value={profile.user.callsign} readonly /></label><label>Display name<input maxlength="100" bind:value={profileName} required /></label><label>First name<input maxlength="80" bind:value={profile.first_name} /></label><label>Middle name<input maxlength="80" bind:value={profile.middle_name} /></label><label>Surname<input maxlength="120" bind:value={profile.surname} /></label><label>Suffix<input maxlength="40" bind:value={profile.suffix} /></label><label>Grid locator<input maxlength="16" bind:value={profile.grid} placeholder="e.g. CN87" /></label><label>QTH / station location<input maxlength="160" bind:value={profile.qth} placeholder="City, region" /></label></div><div class="profile-section"><div><p class="eyebrow cyan">LICENSE RECORD</p><h3>License details</h3></div><label>Class<input maxlength="40" bind:value={profile.license_class} /></label><label>Status<input maxlength="40" bind:value={profile.license_status} /></label><label>Expiration<input type="date" bind:value={profile.license_expires_on} /></label><label>Country<input maxlength="80" bind:value={profile.country} /></label><label>Latitude<input maxlength="32" bind:value={profile.latitude} /></label><label>Longitude<input maxlength="32" bind:value={profile.longitude} /></label></div><div class="profile-section address-section"><div><p class="eyebrow cyan">PRIVATE CONTACT</p><h3>Mailing address</h3><p class="form-help">Used for your account record and future club workflows. It is not included in activity summaries or copy links.</p></div><label>Address line 1<input maxlength="160" bind:value={profile.address_line_1} /></label><label>Address line 2<input maxlength="160" bind:value={profile.address_line_2} /></label><label>State / region<input maxlength="80" bind:value={profile.state} /></label><label>Postal code<input maxlength="32" bind:value={profile.postal_code} /></label></div><button disabled={profileBusy}>{profileBusy ? 'WORKING…' : 'SAVE OPERATOR PROFILE'}</button></form>{:else}<p class="notice">Loading operator profile…</p>{/if}
@@ -295,7 +300,7 @@
       {:else if tab === 'clubs'}<ClubsPanel {clubs} {capabilities} currentUser={user} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} {accessRequests} refresh={load} />
       {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
-      {:else if tab === 'activity'}<ActivitySummaryPanel {clubs} {events} /><ActivityVisibilityPanel {clubs} {events} /><ActivityPanel administrator={user?.global_role === 'administrator'} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} />
+      {:else if tab === 'activity'}<ActivitySummaryPanel {clubs} {events} /><ActivityVisibilityPanel {clubs} {events} /><ActivityPanel administrator={user?.global_role === 'administrator'} {capabilities} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} />
       {:else}<StationLinkPanel currentUser={user} />{/if}
     </main>
     <SiteFooter />

@@ -148,24 +148,6 @@ export type ClubJoinRequest = {
   reviewed_by: string | null;
 };
 
-export type ClubPosition = {
-  id: string; club_id: string; name: string; position_type: string;
-  seats: number; term_years: number; election_parity: string; description: string;
-};
-export type ClubPositionAssignment = {
-  id: string; position_id: string; user_id: string; callsign: string; display_name: string;
-  seat_number: number; starts_on: string; ends_on: string; selection_method: string;
-};
-export type ClubElection = {
-  id: string; club_id: string; title: string; election_year: number; status: string;
-  opens_at: string | null; closes_at: string | null; notes: string; position_ids: string[];
-};
-export type ClubGovernance = {
-  positions: ClubPosition[];
-  assignments: ClubPositionAssignment[];
-  elections: ClubElection[];
-};
-
 export type Membership = {
   club_id: string;
   club_name: string;
