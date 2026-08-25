@@ -11,10 +11,10 @@ use axum::{
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use qsonaut_protocol::{
     BootstrapRequest, Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
-    DeviceTokenRecord, SetupStatus,
+    DeviceTokenRecord, PasswordResetInput, ProfileUpdateInput, SetupStatus, UserProfile,
 };
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -22,6 +22,14 @@ use time::Duration;
 use uuid::Uuid;
 
 const COOKIE_NAME: &str = "qsonaut_session";
+pub(crate) const DEVICE_SCOPES: &[&str] = &[
+    "events:read",
+    "messages:read",
+    "messages:write",
+    "presence:write",
+    "logs:write",
+    "diagnostics:write",
+];
 #[utoipa::path(get, path = "/api/v1/auth/setup", tag = "authentication", responses((status = 200, body = SetupStatus)))]
 pub(crate) async fn setup_status(State(state): State<AppState>) -> HttpResult<Json<SetupStatus>> {
     Ok(Json(SetupStatus {
@@ -147,22 +155,19 @@ async fn issue_device_token(
     rand::rng().fill_bytes(&mut bytes);
     let token = URL_SAFE_NO_PAD.encode(bytes);
     let expires_at = Utc::now() + ChronoDuration::days(90);
+    let scopes = serde_json::json!(DEVICE_SCOPES);
     state
         .store
-        .create_device_token(user.id, name, &token_hash(&token), expires_at)
+        .create_device_token(user.id, name, &token_hash(&token), expires_at, &scopes)
         .await?;
     Ok(Json(DeviceToken {
         token,
         user,
         expires_at,
-        scopes: vec![
-            "events:read".to_owned(),
-            "messages:read".to_owned(),
-            "messages:write".to_owned(),
-            "presence:write".to_owned(),
-            "logs:write".to_owned(),
-            "diagnostics:write".to_owned(),
-        ],
+        scopes: DEVICE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_owned())
+            .collect(),
     }))
 }
 
@@ -182,6 +187,206 @@ pub(crate) async fn me(
     jar: CookieJar,
 ) -> HttpResult<Json<CurrentUser>> {
     Ok(Json(require_user(&state, &jar).await?))
+}
+
+#[utoipa::path(patch, path = "/api/v1/auth/me", tag = "authentication", request_body = ProfileUpdateInput, responses((status = 200, body = CurrentUser), (status = 401)))]
+pub(crate) async fn update_me(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<ProfileUpdateInput>,
+) -> HttpResult<Json<CurrentUser>> {
+    let user = require_user(&state, &jar).await?;
+    validate_display_name(&input.display_name)?;
+    Ok(Json(
+        state
+            .store
+            .update_user_display_name(user.id, input.display_name.trim())
+            .await?
+            .ok_or_else(HttpError::not_found)?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/auth/profile", tag = "authentication", responses((status = 200, body = UserProfile), (status = 401)))]
+pub(crate) async fn profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<UserProfile>> {
+    let user = require_user(&state, &jar).await?;
+    Ok(Json(
+        state
+            .store
+            .user_profile(user.id)
+            .await?
+            .ok_or_else(HttpError::not_found)?,
+    ))
+}
+
+#[utoipa::path(patch, path = "/api/v1/auth/profile", tag = "authentication", request_body = ProfileUpdateInput, responses((status = 200, body = UserProfile), (status = 401)))]
+pub(crate) async fn update_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<ProfileUpdateInput>,
+) -> HttpResult<Json<UserProfile>> {
+    let user = require_user(&state, &jar).await?;
+    validate_profile(&input)?;
+    Ok(Json(
+        state
+            .store
+            .update_user_profile(user.id, &input)
+            .await?
+            .ok_or_else(HttpError::not_found)?,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HamDbResponse {
+    hamdb: HamDbPayload,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HamDbPayload {
+    callsign: HamDbCallsign,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HamDbCallsign {
+    #[serde(default)]
+    call: String,
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    expires: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    grid: String,
+    #[serde(default, alias = "lat")]
+    latitude: String,
+    #[serde(default, alias = "lon")]
+    longitude: String,
+    #[serde(default, alias = "fname")]
+    first_name: String,
+    #[serde(default, alias = "mi")]
+    middle_name: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    suffix: String,
+    #[serde(default, alias = "addr1")]
+    address_line_1: String,
+    #[serde(default, alias = "addr2")]
+    address_line_2: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default, alias = "zip")]
+    postal_code: String,
+    #[serde(default)]
+    country: String,
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/profile/hamdb", tag = "authentication", responses((status = 200, body = UserProfile), (status = 502, description = "HamDB unavailable or returned invalid data")))]
+pub(crate) async fn refresh_hamdb_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<UserProfile>> {
+    let user = require_user(&state, &jar).await?;
+    let url = format!("https://api.hamdb.org/{}/json/QSONaut", user.callsign);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("QSONaut-Server/0.1")
+        .build()
+        .map_err(|_| HttpError::bad_gateway("could not initialize HamDB client"))?;
+    let response = match client.get(url).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, "HamDB request failed");
+            state
+                .store
+                .set_hamdb_error(user.id, "HamDB could not be reached")
+                .await?;
+            return Err(HttpError::bad_gateway("HamDB could not be reached"));
+        }
+    };
+    let response = match response.error_for_status() {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, "HamDB returned an error");
+            state
+                .store
+                .set_hamdb_error(user.id, "HamDB rejected the lookup")
+                .await?;
+            return Err(HttpError::bad_gateway("HamDB rejected the lookup"));
+        }
+    };
+    let response = match response.json::<HamDbResponse>().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, "HamDB response was invalid");
+            state
+                .store
+                .set_hamdb_error(user.id, "HamDB returned invalid profile data")
+                .await?;
+            return Err(HttpError::bad_gateway(
+                "HamDB returned invalid profile data",
+            ));
+        }
+    };
+    let ham = response.hamdb.callsign;
+    if normalize_call(&ham.call) != user.callsign || ham.status.eq_ignore_ascii_case("invalid") {
+        state
+            .store
+            .set_hamdb_error(user.id, "HamDB did not return the requested callsign")
+            .await?;
+        return Err(HttpError::bad_gateway(
+            "HamDB did not return the requested callsign",
+        ));
+    }
+    let profile = ProfileUpdateInput {
+        display_name: user.display_name,
+        grid: ham.grid,
+        qth: String::new(),
+        first_name: ham.first_name,
+        middle_name: ham.middle_name,
+        surname: ham.name,
+        suffix: ham.suffix,
+        license_class: ham.class,
+        license_status: ham.status,
+        license_expires_on: parse_hamdb_date(&ham.expires),
+        address_line_1: ham.address_line_1,
+        address_line_2: ham.address_line_2,
+        state: ham.state,
+        postal_code: ham.postal_code,
+        country: ham.country,
+        latitude: ham.latitude,
+        longitude: ham.longitude,
+    };
+    validate_profile(&profile)?;
+    Ok(Json(
+        state
+            .store
+            .update_hamdb_profile(user.id, &profile)
+            .await?
+            .ok_or_else(HttpError::not_found)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/me/password", tag = "authentication", request_body = PasswordResetInput, responses((status = 204), (status = 401)))]
+pub(crate) async fn update_my_password(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<PasswordResetInput>,
+) -> HttpResult<StatusCode> {
+    let user = require_user(&state, &jar).await?;
+    validate_password(&input.password)?;
+    let hash = hash_password(input.password).await?;
+    if !state
+        .store
+        .update_member_password_hash(user.id, &hash)
+        .await?
+    {
+        return Err(HttpError::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 #[utoipa::path(post, path = "/api/v1/auth/logout", tag = "authentication", responses((status = 204, description = "Session revoked")))]
 pub(crate) async fn logout(
@@ -228,6 +433,25 @@ pub(crate) async fn require_device(
         .device_token_user(&token_hash(bearer_token(headers)?))
         .await?
         .ok_or_else(HttpError::unauthorized)
+}
+
+pub(crate) async fn require_device_with_scopes(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> HttpResult<(CurrentUser, Vec<String>)> {
+    let token = bearer_token(headers)?;
+    let hash = token_hash(token);
+    let user = state
+        .store
+        .device_token_user(&hash)
+        .await?
+        .ok_or_else(HttpError::unauthorized)?;
+    let scopes = state
+        .store
+        .device_token_scopes(&hash)
+        .await?
+        .ok_or_else(HttpError::unauthorized)?;
+    Ok((user, scopes))
 }
 
 async fn verify_credentials(state: &AppState, input: Credentials) -> HttpResult<CurrentUser> {
@@ -328,6 +552,42 @@ pub(crate) fn validate_password(password: &str) -> HttpResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_profile(input: &ProfileUpdateInput) -> HttpResult<()> {
+    validate_display_name(&input.display_name)?;
+    let fields = [
+        ("grid", input.grid.as_str(), 16),
+        ("QTH", input.qth.as_str(), 160),
+        ("first name", input.first_name.as_str(), 80),
+        ("middle name", input.middle_name.as_str(), 80),
+        ("surname", input.surname.as_str(), 120),
+        ("suffix", input.suffix.as_str(), 40),
+        ("license class", input.license_class.as_str(), 40),
+        ("license status", input.license_status.as_str(), 40),
+        ("address", input.address_line_1.as_str(), 160),
+        ("address", input.address_line_2.as_str(), 160),
+        ("state", input.state.as_str(), 80),
+        ("postal code", input.postal_code.as_str(), 32),
+        ("country", input.country.as_str(), 80),
+        ("latitude", input.latitude.as_str(), 32),
+        ("longitude", input.longitude.as_str(), 32),
+    ];
+    if let Some((name, _, max)) = fields
+        .iter()
+        .find(|(_, value, max)| value.trim().len() > *max)
+    {
+        return Err(HttpError::bad_request(format!(
+            "{name} is too long (maximum {max} characters)"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_hamdb_date(value: &str) -> Option<NaiveDate> {
+    ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"]
+        .iter()
+        .find_map(|format| NaiveDate::parse_from_str(value.trim(), format).ok())
 }
 pub(crate) async fn hash_password(password: String) -> HttpResult<String> {
     tokio::task::spawn_blocking(move || {

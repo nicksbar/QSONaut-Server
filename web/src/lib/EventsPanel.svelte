@@ -14,7 +14,21 @@
   let working = $state(false);
   let error = $state('');
   let configuredTemplateId = $state('');
+  let editingId = $state<string | null>(null);
+  let eventSearch = $state('');
+  let eventStatusFilter = $state('all');
+  let eventClubFilter = $state('all');
+  let eventPage = $state(1);
+  const eventPageSize = 20;
   let selectedTemplate = $derived(templates.find((template) => template.id === templateId));
+  let filteredEvents = $derived(events.filter((event) => {
+    const query = eventSearch.trim().toLowerCase();
+    return (!query || `${event.name} ${event.contest_name} ${event.special_callsign || ''}`.toLowerCase().includes(query))
+      && (eventStatusFilter === 'all' || event.status === eventStatusFilter)
+      && (eventClubFilter === 'all' || event.club_id === eventClubFilter);
+  }));
+  let eventPageCount = $derived(Math.max(1, Math.ceil(filteredEvents.length / eventPageSize)));
+  let visibleEvents = $derived(filteredEvents.slice((eventPage - 1) * eventPageSize, eventPage * eventPageSize));
 
   $effect(() => { if (!clubs.some((club) => club.id === clubId)) clubId = clubs[0]?.id || ''; });
   $effect(() => {
@@ -32,6 +46,32 @@
     return templates.find((template) => template.id === id)?.name || 'General club event';
   }
 
+  function localDateTime(value: string): string {
+    const date = new Date(value);
+    const pad = (part: number) => String(part).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function editEvent(event: Event) {
+    editingId = event.id;
+    clubId = event.club_id;
+    name = event.name;
+    templateId = event.contest_template_id || '';
+    specialCallsign = event.special_callsign || '';
+    start = localDateTime(event.starts_at);
+    end = localDateTime(event.ends_at);
+    status = event.status;
+    config = Object.fromEntries(Object.entries(event.contest_config || {}).map(([key, value]) => [key, String(value)]));
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  }
+
+  function clearForm() {
+    editingId = null; name = specialCallsign = start = end = '';
+    status = 'draft'; templateId = ''; config = {};
+  }
+
+  function resetEventPage() { eventPage = 1; }
+
   async function run(work: () => Promise<void>) {
     working = true; error = '';
     try { await work(); } catch (cause) { error = (cause as Error).message; } finally { working = false; }
@@ -39,8 +79,8 @@
 
   async function createEvent() {
     await run(async () => {
-      await api<Event>('/api/v1/events', {
-        method: 'POST',
+      await api<Event>(editingId ? `/api/v1/events/${editingId}` : '/api/v1/events', {
+        method: editingId ? 'PATCH' : 'POST',
         body: JSON.stringify({
           club_id: clubId,
           name,
@@ -53,8 +93,7 @@
           contest_config: config,
         }),
       });
-      name = specialCallsign = start = end = '';
-      status = 'draft'; templateId = ''; config = {};
+      clearForm();
       await refresh();
     });
   }
@@ -70,14 +109,20 @@
 <section class="grid events-grid">
   <div>
     <p class="eyebrow">OPERATIONS / CONTEST INSTANCES</p>
-    <h2>Events</h2>
-    {#if events.length === 0}<p class="empty">No events scheduled.</p>{/if}
-    {#each events as event}
+    <div class="list-heading"><h2>Events</h2><small>{filteredEvents.length} of {events.length}</small></div>
+    <div class="list-tools"><input aria-label="Search events" placeholder="Search operations or callsign" bind:value={eventSearch} oninput={resetEventPage} /><select aria-label="Filter events by status" bind:value={eventStatusFilter} onchange={resetEventPage}><option value="all">All statuses</option>{#each ['draft','scheduled','active','completed','cancelled'] as statusOption}<option value={statusOption}>{statusOption}</option>{/each}</select><select aria-label="Filter events by club" bind:value={eventClubFilter} onchange={resetEventPage}><option value="all">All clubs</option>{#each clubs as club}<option value={club.id}>{club.name}</option>{/each}</select></div>
+    {#if events.length === 0}
+      <p class="empty">No events scheduled.</p>
+    {:else if visibleEvents.length === 0}
+      <p class="empty">No events match the current filters.</p>
+    {/if}
+    {#each visibleEvents as event}
       <article class="record event-record">
         <b>{event.name}</b><span class="pill">{event.status}</span>
-        <p>{templateName(event.contest_template_id)} · {event.special_callsign || 'club callsign'} · {new Date(event.starts_at).toLocaleString()}</p>
+        <p>{clubs.find((club) => club.id === event.club_id)?.name || 'club'} · {templateName(event.contest_template_id)} · {event.special_callsign || 'club callsign'}</p><small>{new Date(event.starts_at).toLocaleString()} → {new Date(event.ends_at).toLocaleString()} · {event.participant_count} participant{event.participant_count === 1 ? '' : 's'}</small>
         {#if Object.keys(event.contest_config || {}).length}<small class="config-line">{Object.entries(event.contest_config).map(([key, value]) => `${key}: ${value}`).join(' · ')}</small>{/if}
         <div class="actions">
+          <button onclick={() => editEvent(event)}>EDIT</button>
           {#if event.status === 'draft'}<button onclick={() => setStatus(event.id, 'scheduled')}>SCHEDULE</button>{/if}
           {#if !['active','completed','cancelled'].includes(event.status)}<button onclick={() => setStatus(event.id, 'active')}>ACTIVATE</button>{/if}
           {#if event.status === 'active'}<button onclick={() => setStatus(event.id, 'completed')}>COMPLETE</button>{/if}
@@ -85,11 +130,12 @@
         </div>
       </article>
     {/each}
+    {#if visibleEvents.length > 0}<div class="list-pager"><button class="secondary" disabled={eventPage <= 1} onclick={() => eventPage -= 1}>PREVIOUS</button><small>PAGE {eventPage} / {eventPageCount}</small><button class="secondary" disabled={eventPage >= eventPageCount} onclick={() => eventPage += 1}>NEXT</button></div>{/if}
   </div>
 
   <div>
     <form onsubmit={(event) => { event.preventDefault(); createEvent(); }}>
-      <h3>Create club operation</h3>
+      <h3>{editingId ? 'Edit club operation' : 'Create club operation'}</h3>
       <p class="form-help">Choose a contest template for rule-aware setup, or leave it general for a club event.</p>
       <label>Club<select bind:value={clubId} required>{#each clubs as club}<option value={club.id}>{club.name}</option>{/each}</select></label>
       <label>Operation name<input maxlength="150" bind:value={name} required /></label>
@@ -116,7 +162,18 @@
       <label>Ends<input type="datetime-local" bind:value={end} required /></label>
       <label>Initial state<select bind:value={status}>{#each ['draft','scheduled','active'] as item}<option value={item}>{item}</option>{/each}</select></label>
       {#if error}<p class="error">{error}</p>{/if}
-      <button disabled={working || !clubId}>{working ? 'CREATING…' : 'CREATE OPERATION'}</button>
+      {#if editingId}<button type="button" class="secondary" onclick={clearForm} disabled={working}>CANCEL EDIT</button>{/if}<button disabled={working || !clubId}>{working ? 'SAVING…' : editingId ? 'SAVE OPERATION' : 'CREATE OPERATION'}</button>
     </form>
   </div>
 </section>
+
+<style>
+  .list-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+  .list-heading h2 { margin-bottom:0; }
+  .list-heading small, .list-pager small { color:var(--muted); }
+  .list-tools { display:grid; grid-template-columns:1.5fr 1fr 1fr; gap:8px; margin:12px 0; }
+  .list-tools input, .list-tools select { min-width:0; width:100%; box-sizing:border-box; }
+  .list-pager { display:flex; align-items:center; justify-content:center; gap:14px; margin:14px 0 24px; }
+  .list-pager .secondary { padding:7px 10px; }
+  @media (max-width:700px) { .list-tools { grid-template-columns:1fr; } }
+</style>

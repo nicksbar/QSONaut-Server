@@ -1,6 +1,6 @@
 use crate::{
     AppState,
-    auth::{require_device, validate_callsign},
+    auth::{require_device_with_scopes, validate_callsign},
     error::HttpResult,
 };
 use axum::{
@@ -21,13 +21,13 @@ pub(crate) async fn connect(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> HttpResult<Response> {
-    let user = require_device(&state, &headers).await?;
+    let (user, scopes) = require_device_with_scopes(&state, &headers).await?;
     Ok(upgrade
         .protocols(["qsonaut.v1"])
-        .on_upgrade(move |socket| session(socket, state, user)))
+        .on_upgrade(move |socket| session(socket, state, user, scopes)))
 }
 
-async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser) {
+async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser, scopes: Vec<String>) {
     let mut channel_messages = state.channel_messages.subscribe();
     if send(
         &mut socket,
@@ -51,7 +51,7 @@ async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser) {
             },
             published = channel_messages.recv() => match published {
                 Ok(message) => {
-                    if send(
+                    if has_scope(&scopes, "messages:read") && send(
                         &mut socket,
                         ServerEnvelope {
                             protocol_version: API_VERSION.to_owned(),
@@ -94,7 +94,7 @@ async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser) {
             .await;
             continue;
         }
-        let response = handle_message(&state, &user, envelope.message).await;
+        let response = handle_message(&state, &user, &scopes, envelope.message).await;
         let message = match response {
             Ok(message) => message,
             Err(error) => ServerMessage::Error { message: error },
@@ -118,12 +118,15 @@ async fn session(mut socket: WebSocket, state: AppState, user: CurrentUser) {
 async fn handle_message(
     state: &AppState,
     user: &CurrentUser,
+    scopes: &[String],
     message: ClientMessage,
 ) -> Result<ServerMessage, String> {
     match message {
         ClientMessage::Hello { .. } => Ok(ServerMessage::Ack),
         ClientMessage::Sync => {
-            let events = state
+            require_scope(scopes, "events:read")?;
+            require_scope(scopes, "messages:read")?;
+            let mut events = state
                 .store
                 .events()
                 .await
@@ -138,13 +141,26 @@ async fn handle_message(
                 .channel_messages(200)
                 .await
                 .map_err(|error| internal_error(&error))?;
+            let mut clubs = state
+                .store
+                .clubs(user.id, false)
+                .await
+                .map_err(|error| internal_error(&error))?;
+            clubs.retain(|club| club.my_role.is_some());
+            let club_ids = clubs
+                .iter()
+                .map(|club| club.id)
+                .collect::<std::collections::HashSet<_>>();
+            events.retain(|event| club_ids.contains(&event.club_id));
             Ok(ServerMessage::Snapshot {
                 events,
                 contest_templates,
                 channel_messages,
+                clubs,
             })
         }
         ClientMessage::Presence(input) => {
+            require_scope(scopes, "presence:write")?;
             validate_presence(&input)?;
             state
                 .store
@@ -154,6 +170,7 @@ async fn handle_message(
                 .map_err(|error| internal_error(&error))
         }
         ClientMessage::Log(input) => {
+            require_scope(scopes, "logs:write")?;
             validate_log(&input)?;
             state
                 .store
@@ -169,6 +186,7 @@ async fn handle_message(
                 })
         }
         ClientMessage::Diagnostic(input) => {
+            require_scope(scopes, "diagnostics:write")?;
             if input.category.trim().is_empty() || input.category.len() > 40 {
                 return Err("diagnostic category must contain 1 to 40 characters".to_owned());
             }
@@ -186,6 +204,7 @@ async fn handle_message(
                 .map_err(|error| internal_error(&error))
         }
         ClientMessage::ChannelMessage(input) => {
+            require_scope(scopes, "messages:write")?;
             validate_channel_message(&input)?;
             let message = state
                 .store
@@ -197,6 +216,16 @@ async fn handle_message(
         }
         ClientMessage::Ping => Ok(ServerMessage::Pong),
     }
+}
+
+fn has_scope(scopes: &[String], required: &str) -> bool {
+    scopes.iter().any(|scope| scope == required)
+}
+
+fn require_scope(scopes: &[String], required: &str) -> Result<(), String> {
+    has_scope(scopes, required)
+        .then_some(())
+        .ok_or_else(|| format!("device token lacks required scope: {required}"))
 }
 
 fn validate_channel_message(input: &qsonaut_protocol::ChannelMessageInput) -> Result<(), String> {
@@ -325,5 +354,41 @@ mod tests {
             validate_channel_message(&invalid).unwrap_err(),
             "message must contain 1 to 2000 characters"
         );
+    }
+
+    #[test]
+    fn device_scopes_allow_only_the_requested_operation() {
+        let scopes = vec!["logs:write".to_owned()];
+        assert!(require_scope(&scopes, "logs:write").is_ok());
+        assert_eq!(
+            require_scope(&scopes, "diagnostics:write").unwrap_err(),
+            "device token lacks required scope: diagnostics:write"
+        );
+    }
+
+    #[test]
+    fn log_validation_rejects_malformed_records_but_ignores_legacy_visibility() {
+        let mut input = QsoLogInput {
+            event_id: None,
+            visibility: "global".to_owned(),
+            visibility_club_id: None,
+            idempotency_key: uuid::Uuid::new_v4(),
+            callsign: "W1AW".to_owned(),
+            band: "20m".to_owned(),
+            mode: "FT8".to_owned(),
+            frequency_hz: Some(14_074_000),
+            occurred_at: chrono::Utc::now(),
+            rst_sent: None,
+            rst_received: None,
+            exchange: serde_json::json!({}),
+            points: 1,
+            source: "qsonaut".to_owned(),
+        };
+        assert!(validate_log(&input).is_ok());
+        input.callsign = "not a callsign".to_owned();
+        assert!(validate_log(&input).is_err());
+        input.callsign = "W1AW".to_owned();
+        input.exchange = serde_json::json!({ "payload": "x".repeat(8_193) });
+        assert!(validate_log(&input).is_err());
     }
 }

@@ -46,6 +46,12 @@ impl HttpError {
             message: "internal server error".into(),
         }
     }
+    pub(crate) fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+        }
+    }
     pub(crate) fn not_found() -> Self {
         Self {
             status: StatusCode::NOT_FOUND,

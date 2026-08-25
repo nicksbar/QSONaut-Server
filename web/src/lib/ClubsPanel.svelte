@@ -1,8 +1,8 @@
 <script lang="ts">
   import { api } from './api';
-  import type { Club, ClubGovernance, ClubJoinRequest, ClubMember, User } from './types';
+  import type { Club, ClubGovernance, ClubJoinRequest, ClubMember, ServerCapabilities, User } from './types';
 
-  let { clubs, currentUser, refresh }: { clubs: Club[]; currentUser: User | null; refresh: () => Promise<void> } = $props();
+  let { clubs, capabilities, currentUser, refresh }: { clubs: Club[]; capabilities: ServerCapabilities; currentUser: User | null; refresh: () => Promise<void> } = $props();
   let name = $state(''); let callsign = $state(''); let description = $state('');
   let selectedClubId = $state<string | null>(null);
   let roster = $state<ClubMember[]>([]); let requests = $state<ClubJoinRequest[]>([]);
@@ -11,6 +11,16 @@
   let assignmentPosition = $state(''); let assignmentUser = $state(''); let assignmentSeat = $state(1); let assignmentStart = $state(''); let assignmentEnd = $state(''); let assignmentMethod = $state('elected');
   let electionTitle = $state(''); let electionYear = $state(new Date().getFullYear()); let electionStatus = $state('planned'); let electionOpens = $state(''); let electionCloses = $state(''); let electionPositions = $state<string[]>([]);
   let working = $state(false); let error = $state(''); let notice = $state('');
+  let clubSearch = $state('');
+  let rosterSearch = $state('');
+  let visibleClubs = $derived(clubs.filter((club) => {
+    const query = clubSearch.trim().toLowerCase();
+    return !query || `${club.name} ${club.callsign || ''} ${club.description}`.toLowerCase().includes(query);
+  }));
+  let visibleRoster = $derived(roster.filter((member) => {
+    const query = rosterSearch.trim().toLowerCase();
+    return !query || `${member.callsign} ${member.display_name} ${member.membership_number || ''}`.toLowerCase().includes(query);
+  }));
 
   async function createClub() {
     working = true; error = ''; notice = '';
@@ -109,12 +119,13 @@
 
 <section>
   <div class="section-head"><div><p class="eyebrow">CLUB OPERATIONS</p><h2>Organizations</h2></div><b>{clubs.length} clubs</b></div>
-  <p class="section-intro">Create a club, request membership, and keep roster work visible before renewals become a scramble.</p>
+  <p class="section-intro">Create a club, request membership, and keep activity setup visible. {capabilities.max_clubs === null ? 'Hosted organizational management is enabled.' : `${clubs.length} of ${capabilities.max_clubs} community clubs are in use.`}</p>
   {#if error}<p class="error banner">{error}</p>{/if}{#if notice}<p class="notice banner">{notice}</p>{/if}
   <div class="club-layout">
     <div>
-      {#if clubs.length === 0}<p class="empty">No clubs yet. Register the first one and become its owner.</p>{/if}
-      {#each clubs as club}
+      <div class="list-tools"><input aria-label="Search clubs" placeholder="Search clubs or callsigns" bind:value={clubSearch} /><small>{visibleClubs.length} of {clubs.length} clubs</small></div>
+      {#if clubs.length === 0}<p class="empty">No clubs yet. Register the first one and become its owner.</p>{:else if visibleClubs.length === 0}<p class="empty">No clubs match the current search.</p>{/if}
+      {#each visibleClubs as club}
         <article class="record club-record" class:active={selectedClubId === club.id}>
           <button class="club-open" onclick={() => loadClub(club.id)}><span><b>{club.name}</b><small>{club.callsign || 'COMMUNITY CLUB'}</small></span><em>{club.member_count} members{club.renewal_attention_count ? ` · ${club.renewal_attention_count} need attention` : ''}</em></button>
           <p>{club.description || 'No description yet.'}</p>
@@ -130,7 +141,7 @@
     <form onsubmit={(event) => { event.preventDefault(); createClub(); }}>
       <p class="eyebrow">NEW CLUB</p><h3>Register organization</h3><p class="form-help">The creator becomes the first owner and can approve membership requests.</p>
       <label>Name<input maxlength="120" bind:value={name} required /></label><label>Club callsign<input maxlength="16" bind:value={callsign} /></label><label>Description<textarea maxlength="1000" bind:value={description}></textarea></label>
-      <button disabled={working}>{working ? 'CREATING…' : 'CREATE CLUB'}</button>
+      <button disabled={working || (capabilities.max_clubs !== null && clubs.length >= capabilities.max_clubs)}>{working ? 'CREATING…' : 'CREATE CLUB'}</button>
     </form>
   </div>
 
@@ -141,8 +152,10 @@
         <article class="membership"><span><b>{request.callsign}</b><small>{request.display_name} · requested {new Date(request.requested_at).toLocaleDateString()}</small></span><button disabled={working} onclick={() => review(request, 'approve')}>APPROVE</button><button class="danger" disabled={working} onclick={() => review(request, 'reject')}>REJECT</button></article>
       {:else}<p class="empty">No membership requests waiting.</p>{/each}
       <div class="section-head"><div><p class="eyebrow">ROSTER / RENEWALS</p><h2>Members</h2></div><b>{roster.length} records</b></div>
+      <div class="list-tools"><input aria-label="Search club roster" placeholder="Search roster" bind:value={rosterSearch} /><small>{visibleRoster.length} of {roster.length} members</small></div>
       <div class="table-wrap"><table><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Dues</th><th>Member #</th><th>Renewal</th><th></th></tr></thead><tbody>
-        {#each roster as member}
+        {#if visibleRoster.length === 0}<tr><td colspan="7"><p class="empty">No roster members match the current search.</p></td></tr>{/if}
+        {#each visibleRoster as member}
           <tr><td><b>{member.callsign}</b><br/><small>{member.display_name}</small></td><td><select bind:value={member.role}><option>owner</option><option>coordinator</option><option>operator</option><option>observer</option></select></td><td><select bind:value={member.membership_status}><option>active</option><option>lapsed</option><option>inactive</option></select></td><td><select bind:value={member.dues_status}><option value="not_tracked">not tracked</option><option>current</option><option>due</option><option>overdue</option><option>waived</option></select></td><td><input aria-label="Membership number" bind:value={member.membership_number} /></td><td><input aria-label="Renewal due date" type="date" bind:value={member.renewal_due_on} /></td><td><div class="actions"><button disabled={working} onclick={() => saveMember(member)}>SAVE</button>{#if member.user_id !== currentUser?.id}<button class="danger" disabled={working} onclick={() => removeMember(member)}>REMOVE</button>{/if}</div></td></tr>
         {/each}
       </tbody></table></div>
@@ -178,4 +191,7 @@
 
 <style>
   .club-layout,.governance-forms{display:grid;grid-template-columns:1.3fr .8fr;gap:38px}.club-record{padding:18px}.club-record.active{box-shadow:inset 2px 0 var(--cyan);background:#0a2027}.club-open{grid-column:1/-1;display:flex;justify-content:space-between;text-align:left;width:100%;border:0;background:transparent;color:#dce9eb;cursor:pointer;padding:0}.club-open span{display:grid}.club-open small,.club-open em{color:var(--muted);font-style:normal}.club-console{margin-top:45px}.club-console input,.club-console select{min-width:110px}.club-console .actions{margin:0}.club-console td small{color:var(--muted)}.governance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:35px}.governance-forms{grid-template-columns:repeat(3,1fr);margin-top:35px}.governance-forms fieldset{border:1px solid var(--line);display:grid;gap:6px}.check{display:flex;align-items:center}.check input{width:auto}@media(max-width:900px){.club-layout,.governance-forms{grid-template-columns:1fr}}
+  .list-tools { display:flex; align-items:center; gap:10px; margin:12px 0; }
+  .list-tools input { flex:1; min-width:0; }
+  .list-tools small { color:var(--muted); white-space:nowrap; }
 </style>

@@ -5,6 +5,97 @@ export type User = {
   global_role: string;
 };
 
+export type ServerCapabilities = {
+  edition: string;
+  max_clubs: number | null;
+  features: string[];
+};
+
+export type AccessChallenge = {
+  id: string;
+  question: string;
+  expires_at: string;
+  attempts_remaining: number;
+};
+
+export type AccessCallsignLookup = {
+  callsign: string;
+  display_name: string;
+  grid: string;
+  license_class: string;
+  license_status: string;
+};
+
+export type AccessRequest = {
+  id: string;
+  callsign: string;
+  email: string;
+  club_name: string;
+  referral_source: string;
+  hamdb_display_name: string;
+  hamdb_grid: string;
+  hamdb_license_class: string;
+  hamdb_license_status: string;
+  status: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+};
+
+export type UserProfile = {
+  user: User;
+  grid: string;
+  qth: string;
+  first_name: string;
+  middle_name: string;
+  surname: string;
+  suffix: string;
+  license_class: string;
+  license_status: string;
+  license_expires_on: string | null;
+  address_line_1: string;
+  address_line_2: string;
+  state: string;
+  postal_code: string;
+  country: string;
+  latitude: string;
+  longitude: string;
+  hamdb_fetched_at: string | null;
+  hamdb_last_error: string;
+};
+
+export type ActivitySummary = {
+  scope: string;
+  scope_id: string | null;
+  period_days: number;
+  qso_count: number;
+  unique_callsigns: number;
+  band_count: number;
+  mode_count: number;
+  points: number;
+  last_qso_at: string | null;
+  status: string;
+};
+
+export type ActivityVisibility = {
+  id: string;
+  user_id: string;
+  scope: 'overall' | 'club' | 'contest';
+  scope_id: string | null;
+  visibility: 'private' | 'members' | 'global';
+  updated_at: string;
+};
+
+export type ShareLinkRecord = {
+  id: string;
+  qso_log_id: string;
+  occurred_at: string;
+  worked_callsign: string;
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+};
+
 export type DeviceToken = {
   token: string;
   user: User;
@@ -150,6 +241,7 @@ export type Event = {
   status: string;
   contest_template_id: string | null;
   contest_config: Record<string, unknown>;
+  participant_count: number;
 };
 
 export type QsoLog = {
@@ -158,11 +250,31 @@ export type QsoLog = {
   operator_callsign: string;
   event_id: string | null;
   event_name: string | null;
+  visibility: 'private' | 'global' | 'club' | 'contest';
+  visibility_club_id: string | null;
   callsign: string;
   band: string;
   mode: string;
   frequency_hz: number | null;
   occurred_at: string;
+  rst_sent: string | null;
+  rst_received: string | null;
+  exchange: Record<string, unknown>;
+  points: number;
+  source: string;
+};
+
+export type SharedQsoDetail = {
+  operator_callsign: string;
+  event_name: string | null;
+  callsign: string;
+  band: string;
+  mode: string;
+  frequency_hz: number | null;
+  occurred_at: string;
+  rst_sent: string | null;
+  rst_received: string | null;
+  exchange: Record<string, unknown>;
   points: number;
   source: string;
 };

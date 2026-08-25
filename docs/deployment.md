@@ -32,6 +32,38 @@ docker compose --env-file .env -f deploy/compose.yaml up --build -d
 PostgreSQL data is stored in the `qsonaut-data` named volume. Do not use
 `down -v` unless you intentionally want to erase the database.
 
+### Migrations and updates
+
+The server applies any pending SQLx migrations when it starts. Migrations are
+tracked in PostgreSQL and run once, in order; an existing database is not
+reset when the container is rebuilt or restarted.
+
+The first start after an update may take longer while new migrations are
+applied before the HTTP listener starts. Keep the database volume and take a backup before
+updates. If a migration fails, the server should not be treated as upgraded;
+inspect the migration error and restore from backup only if necessary. Never
+run `docker compose down -v` as part of a routine deployment.
+
+Diagnostic reports are bounded at ingestion and retained for 30 days. Expired
+diagnostics and share-link records are removed only by the authenticated
+administrator retention operation (`POST /api/v1/diagnostics/retention/purge`);
+startup and restart do not silently delete data.
+
+### Logs and health checks
+
+For the Compose deployment, server startup, migration, request, and shutdown
+messages are available with:
+
+```text
+docker compose --env-file .env -f deploy/compose.yaml logs -f --tail=200 qsonaut-server
+docker compose --env-file .env -f deploy/compose.yaml logs -f --tail=200 postgres
+curl -fsS http://127.0.0.1:8080/api/v1/health
+```
+
+For a native process, set `RUST_LOG=qsonaut_server=info,tower_http=info` and
+keep the process supervisor's stdout/stderr. The desktop QSONaut client keeps
+its local log at `~/.config/qsonaut/logs/qsonaut.log` on Linux.
+
 ## Proxmox
 
 For Proxmox, a small Debian or Ubuntu VM is the recommended default: install
