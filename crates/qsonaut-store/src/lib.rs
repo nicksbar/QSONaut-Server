@@ -3,15 +3,24 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use qsonaut_protocol::{
-    ChannelMessage, ChannelMessageInput, Club, ClubElection, ClubElectionInput, ClubGovernance,
-    ClubInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition,
-    ClubPositionAssignment, ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate,
-    CurrentUser, DiagnosticReport, DiagnosticReportInput, Event, EventInput, EventStatus,
-    MemberClubRole, QsoLog, QsoLogInput, StationPresence, StationPresenceInput,
+    AccessRequest, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
+    ChannelMessageInput, Club, ClubElection, ClubElectionInput, ClubGovernance, ClubInput,
+    ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition, ClubPositionAssignment,
+    ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate, CurrentUser, DiagnosticReport,
+    DiagnosticReportInput, Event, EventInput, EventStatus, EventUpdateInput, MemberClubRole,
+    ProfileUpdateInput, QsoLog, QsoLogInput, ShareLinkRecord, StationPresence,
+    StationPresenceInput, UserProfile,
 };
 use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
+
+fn should_preserve_last_administrator(
+    administrator_count: i64,
+    target_is_administrator: bool,
+) -> bool {
+    target_is_administrator && administrator_count <= 1
+}
 
 #[derive(sqlx::FromRow)]
 struct EventRow {
@@ -25,6 +34,7 @@ struct EventRow {
     status: String,
     contest_template_id: Option<Uuid>,
     contest_config: Value,
+    participant_count: i64,
 }
 
 impl From<EventRow> for Event {
@@ -47,6 +57,7 @@ impl From<EventRow> for Event {
             status,
             contest_template_id: row.contest_template_id,
             contest_config: row.contest_config,
+            participant_count: row.participant_count,
         }
     }
 }
@@ -101,6 +112,8 @@ struct QsoLogRow {
     operator_callsign: String,
     event_id: Option<Uuid>,
     event_name: Option<String>,
+    visibility: String,
+    visibility_club_id: Option<Uuid>,
     idempotency_key: Uuid,
     callsign: String,
     band: String,
@@ -112,6 +125,112 @@ struct QsoLogRow {
     exchange: Value,
     points: i32,
     source: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct UserProfileRow {
+    id: Uuid,
+    callsign: String,
+    display_name: String,
+    global_role: String,
+    grid: String,
+    qth: String,
+    first_name: String,
+    middle_name: String,
+    surname: String,
+    suffix: String,
+    license_class: String,
+    license_status: String,
+    license_expires_on: Option<NaiveDate>,
+    address_line_1: String,
+    address_line_2: String,
+    state: String,
+    postal_code: String,
+    country: String,
+    latitude: String,
+    longitude: String,
+    hamdb_fetched_at: Option<DateTime<Utc>>,
+    hamdb_last_error: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AccessRequestRow {
+    id: Uuid,
+    callsign: String,
+    email: String,
+    club_name: String,
+    referral_source: String,
+    hamdb_display_name: String,
+    hamdb_grid: String,
+    hamdb_license_class: String,
+    hamdb_license_status: String,
+    status: String,
+    reviewed_at: Option<DateTime<Utc>>,
+    reviewed_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+pub struct NewAccessRequest<'a> {
+    pub id: Uuid,
+    pub callsign: &'a str,
+    pub email: &'a str,
+    pub club_name: &'a str,
+    pub referral_source: &'a str,
+    pub hamdb_display_name: &'a str,
+    pub hamdb_grid: &'a str,
+    pub hamdb_license_class: &'a str,
+    pub hamdb_license_status: &'a str,
+}
+
+impl From<AccessRequestRow> for AccessRequest {
+    fn from(row: AccessRequestRow) -> Self {
+        Self {
+            id: row.id,
+            callsign: row.callsign,
+            email: row.email,
+            club_name: row.club_name,
+            referral_source: row.referral_source,
+            hamdb_display_name: row.hamdb_display_name,
+            hamdb_grid: row.hamdb_grid,
+            hamdb_license_class: row.hamdb_license_class,
+            hamdb_license_status: row.hamdb_license_status,
+            status: row.status,
+            reviewed_at: row.reviewed_at,
+            reviewed_by: row.reviewed_by,
+            created_at: row.created_at,
+        }
+    }
+}
+
+impl From<UserProfileRow> for UserProfile {
+    fn from(row: UserProfileRow) -> Self {
+        Self {
+            user: CurrentUser {
+                id: row.id,
+                callsign: row.callsign,
+                display_name: row.display_name,
+                global_role: row.global_role,
+            },
+            grid: row.grid,
+            qth: row.qth,
+            first_name: row.first_name,
+            middle_name: row.middle_name,
+            surname: row.surname,
+            suffix: row.suffix,
+            license_class: row.license_class,
+            license_status: row.license_status,
+            license_expires_on: row.license_expires_on,
+            address_line_1: row.address_line_1,
+            address_line_2: row.address_line_2,
+            state: row.state,
+            postal_code: row.postal_code,
+            country: row.country,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            hamdb_fetched_at: row.hamdb_fetched_at,
+            hamdb_last_error: row.hamdb_last_error,
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -207,6 +326,8 @@ impl From<QsoLogRow> for QsoLog {
             operator_callsign: row.operator_callsign,
             event_id: row.event_id,
             event_name: row.event_name,
+            visibility: row.visibility,
+            visibility_club_id: row.visibility_club_id,
             idempotency_key: row.idempotency_key,
             callsign: row.callsign,
             band: row.band,
@@ -249,6 +370,118 @@ impl Store {
             .fetch_one(&self.pool)
             .await?;
         Ok(count == 0)
+    }
+
+    pub async fn create_access_challenge(
+        &self,
+        id: Uuid,
+        question_index: i32,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "WITH expired AS (DELETE FROM access_challenges WHERE expires_at <= now()) INSERT INTO access_challenges (id,question_index,expires_at) VALUES ($1,$2,$3)",
+        )
+        .bind(id)
+        .bind(question_index)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn take_access_challenge_attempt(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(i32, i16)>, sqlx::Error> {
+        sqlx::query_as::<_, (i32, i16)>(
+            "UPDATE access_challenges SET attempts_remaining=attempts_remaining-1 WHERE id=$1 AND expires_at > now() AND attempts_remaining > 0 RETURNING question_index,attempts_remaining",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn consume_access_challenge(&self, id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM access_challenges WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn create_access_request(
+        &self,
+        input: &NewAccessRequest<'_>,
+    ) -> Result<AccessRequest, sqlx::Error> {
+        sqlx::query_as::<_, AccessRequestRow>("INSERT INTO access_requests (id,callsign,email,club_name,referral_source,hamdb_display_name,hamdb_grid,hamdb_license_class,hamdb_license_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,callsign,email,club_name,referral_source,hamdb_display_name,hamdb_grid,hamdb_license_class,hamdb_license_status,status,reviewed_at,reviewed_by,created_at")
+            .bind(input.id).bind(input.callsign).bind(input.email).bind(input.club_name).bind(input.referral_source)
+            .bind(input.hamdb_display_name).bind(input.hamdb_grid).bind(input.hamdb_license_class).bind(input.hamdb_license_status)
+            .fetch_one(&self.pool).await.map(AccessRequest::from)
+    }
+
+    pub async fn access_requests(&self) -> Result<Vec<AccessRequest>, sqlx::Error> {
+        sqlx::query_as::<_, AccessRequestRow>("SELECT id,callsign,email,club_name,referral_source,hamdb_display_name,hamdb_grid,hamdb_license_class,hamdb_license_status,status,reviewed_at,reviewed_by,created_at FROM access_requests ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, created_at DESC")
+            .fetch_all(&self.pool).await.map(|rows| rows.into_iter().map(AccessRequest::from).collect())
+    }
+
+    pub async fn decide_access_request(
+        &self,
+        id: Uuid,
+        decision: &str,
+        reviewer_id: Uuid,
+    ) -> Result<Option<AccessRequest>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let request = sqlx::query_as::<_, AccessRequestRow>("UPDATE access_requests SET status=$2,reviewed_at=now(),reviewed_by=$3 WHERE id=$1 AND status='pending' RETURNING id,callsign,email,club_name,referral_source,hamdb_display_name,hamdb_grid,hamdb_license_class,hamdb_license_status,status,reviewed_at,reviewed_by,created_at")
+            .bind(id).bind(decision).bind(reviewer_id).fetch_optional(&mut *tx).await?;
+        if let Some(request) = &request {
+            sqlx::query("INSERT INTO audit_events (id,actor_user_id,action,target_type,target_id,metadata) VALUES ($1,$2,$3,'access_request',$4,$5)")
+                .bind(Uuid::new_v4()).bind(reviewer_id).bind(format!("access_request_{decision}"))
+                .bind(id).bind(serde_json::json!({"callsign": request.callsign})).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(request.map(AccessRequest::from))
+    }
+
+    pub async fn approve_access_request(
+        &self,
+        request_id: Uuid,
+        reviewer_id: Uuid,
+        password_hash: &str,
+    ) -> Result<Option<(AccessRequest, CurrentUser)>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(716736630)")
+            .execute(&mut *tx)
+            .await?;
+        let request = sqlx::query_as::<_, AccessRequestRow>("SELECT id,callsign,email,club_name,referral_source,hamdb_display_name,hamdb_grid,hamdb_license_class,hamdb_license_status,status,reviewed_at,reviewed_by,created_at FROM access_requests WHERE id=$1 AND status='pending' FOR UPDATE")
+            .bind(request_id).fetch_optional(&mut *tx).await?;
+        let Some(request) = request else {
+            tx.rollback().await?;
+            return Ok(None);
+        };
+        let display_name = if request.hamdb_display_name.trim().is_empty() {
+            request.callsign.clone()
+        } else {
+            request.hamdb_display_name.trim().to_owned()
+        };
+        let user = sqlx::query_as::<_, (Uuid, String, String, String)>("INSERT INTO users (id,callsign,display_name,password_hash,global_role,grid,license_class,license_status,hamdb_fetched_at) VALUES ($1,$2,$3,$4,'member',$5,$6,$7,now()) RETURNING id,callsign,display_name,global_role")
+            .bind(Uuid::new_v4()).bind(&request.callsign).bind(display_name).bind(password_hash)
+            .bind(&request.hamdb_grid).bind(&request.hamdb_license_class).bind(&request.hamdb_license_status)
+            .fetch_one(&mut *tx).await?;
+        let reviewed = sqlx::query_as::<_, AccessRequestRow>("UPDATE access_requests SET status='approved',reviewed_at=now(),reviewed_by=$2 WHERE id=$1 RETURNING id,callsign,email,club_name,referral_source,hamdb_display_name,hamdb_grid,hamdb_license_class,hamdb_license_status,status,reviewed_at,reviewed_by,created_at")
+            .bind(request_id).bind(reviewer_id).fetch_one(&mut *tx).await?;
+        sqlx::query("INSERT INTO audit_events (id,actor_user_id,action,target_type,target_id,metadata) VALUES ($1,$2,'access_request_approved','access_request',$3,$4)")
+            .bind(Uuid::new_v4()).bind(reviewer_id).bind(request_id)
+            .bind(serde_json::json!({"callsign": reviewed.callsign, "user_id": user.0})).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(Some((
+            AccessRequest::from(reviewed),
+            CurrentUser {
+                id: user.0,
+                callsign: user.1,
+                display_name: user.2,
+                global_role: user.3,
+            },
+        )))
     }
 
     pub async fn create_administrator(
@@ -331,7 +564,124 @@ impl Store {
         })
     }
 
-    pub async fn update_member_display_name(
+    pub async fn user_profile(&self, user_id: Uuid) -> Result<Option<UserProfile>, sqlx::Error> {
+        sqlx::query_as::<_, UserProfileRow>("SELECT id,callsign,display_name,global_role,grid,qth,first_name,middle_name,surname,suffix,license_class,license_status,license_expires_on,address_line_1,address_line_2,state,postal_code,country,latitude,longitude,hamdb_fetched_at,hamdb_last_error FROM users WHERE id=$1")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(UserProfile::from))
+    }
+
+    pub async fn update_user_profile(
+        &self,
+        user_id: Uuid,
+        input: &ProfileUpdateInput,
+    ) -> Result<Option<UserProfile>, sqlx::Error> {
+        sqlx::query("UPDATE users SET display_name=$2,grid=$3,qth=$4,first_name=$5,middle_name=$6,surname=$7,suffix=$8,license_class=$9,license_status=$10,license_expires_on=$11,address_line_1=$12,address_line_2=$13,state=$14,postal_code=$15,country=$16,latitude=$17,longitude=$18 WHERE id=$1")
+            .bind(user_id)
+            .bind(input.display_name.trim())
+            .bind(input.grid.trim().to_ascii_uppercase())
+            .bind(input.qth.trim())
+            .bind(input.first_name.trim())
+            .bind(input.middle_name.trim())
+            .bind(input.surname.trim())
+            .bind(input.suffix.trim())
+            .bind(input.license_class.trim())
+            .bind(input.license_status.trim())
+            .bind(input.license_expires_on)
+            .bind(input.address_line_1.trim())
+            .bind(input.address_line_2.trim())
+            .bind(input.state.trim())
+            .bind(input.postal_code.trim())
+            .bind(input.country.trim())
+            .bind(input.latitude.trim())
+            .bind(input.longitude.trim())
+            .execute(&self.pool)
+            .await?;
+        self.user_profile(user_id).await
+    }
+
+    pub async fn update_hamdb_profile(
+        &self,
+        user_id: Uuid,
+        profile: &ProfileUpdateInput,
+    ) -> Result<Option<UserProfile>, sqlx::Error> {
+        sqlx::query("UPDATE users SET grid=$2,first_name=$3,middle_name=$4,surname=$5,suffix=$6,license_class=$7,license_status=$8,license_expires_on=$9,address_line_1=$10,address_line_2=$11,state=$12,postal_code=$13,country=$14,latitude=$15,longitude=$16,hamdb_fetched_at=now(),hamdb_last_error='' WHERE id=$1")
+            .bind(user_id)
+            .bind(profile.grid.trim().to_ascii_uppercase())
+            .bind(profile.first_name.trim())
+            .bind(profile.middle_name.trim())
+            .bind(profile.surname.trim())
+            .bind(profile.suffix.trim())
+            .bind(profile.license_class.trim())
+            .bind(profile.license_status.trim())
+            .bind(profile.license_expires_on)
+            .bind(profile.address_line_1.trim())
+            .bind(profile.address_line_2.trim())
+            .bind(profile.state.trim())
+            .bind(profile.postal_code.trim())
+            .bind(profile.country.trim())
+            .bind(profile.latitude.trim())
+            .bind(profile.longitude.trim())
+            .execute(&self.pool)
+            .await?;
+        self.user_profile(user_id).await
+    }
+
+    pub async fn set_hamdb_error(&self, user_id: Uuid, message: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET hamdb_last_error=$2 WHERE id=$1")
+            .bind(user_id)
+            .bind(message.chars().take(240).collect::<String>())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_member_profile(
+        &self,
+        user_id: Uuid,
+        display_name: &str,
+        global_role: &str,
+    ) -> Result<Option<CurrentUser>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(716736629)")
+            .execute(&mut *tx)
+            .await?;
+        if global_role == "member" {
+            let administrators: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM users WHERE global_role = 'administrator'",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            let target_is_administrator: bool =
+                sqlx::query_scalar("SELECT global_role = 'administrator' FROM users WHERE id = $1")
+                    .bind(user_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .unwrap_or(false);
+            if should_preserve_last_administrator(administrators, target_is_administrator) {
+                tx.rollback().await?;
+                return Ok(None);
+            }
+        }
+        let row = sqlx::query_as::<_, (Uuid, String, String, String)>(
+            "UPDATE users SET display_name=$2, global_role=$3 WHERE id=$1 RETURNING id, callsign, display_name, global_role",
+        )
+        .bind(user_id)
+        .bind(display_name)
+        .bind(global_role)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|r| CurrentUser {
+            id: r.0,
+            callsign: r.1,
+            display_name: r.2,
+            global_role: r.3,
+        }))
+    }
+
+    pub async fn update_user_display_name(
         &self,
         user_id: Uuid,
         display_name: &str,
@@ -343,14 +693,77 @@ impl Store {
         .bind(display_name)
         .fetch_optional(&self.pool)
         .await
-        .map(|row| {
-            row.map(|r| CurrentUser {
-                id: r.0,
-                callsign: r.1,
-                display_name: r.2,
-                global_role: r.3,
-            })
+        .map(|row| row.map(|r| CurrentUser { id: r.0, callsign: r.1, display_name: r.2, global_role: r.3 }))
+    }
+
+    pub async fn activity_summary(
+        &self,
+        user_id: Uuid,
+        scope: &str,
+        scope_id: Option<Uuid>,
+        period_days: i32,
+    ) -> Result<qsonaut_protocol::ActivitySummary, sqlx::Error> {
+        let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64, Option<DateTime<Utc>>)>(
+            "SELECT COUNT(*)::bigint, COUNT(DISTINCT q.callsign)::bigint, COUNT(DISTINCT q.band)::bigint, COUNT(DISTINCT q.mode)::bigint, COALESCE(SUM(q.points),0)::bigint, MAX(q.occurred_at) FROM qso_logs q WHERE q.user_id=$1 AND ($2=0 OR q.occurred_at >= now() - make_interval(days => $2)) AND ($3='overall' OR ($3='club' AND EXISTS (SELECT 1 FROM events e WHERE e.id=q.event_id AND e.club_id=$4)) OR ($3='contest' AND q.event_id=$4))",
+        )
+        .bind(user_id)
+        .bind(period_days.clamp(0, 3650))
+        .bind(scope)
+        .bind(scope_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(qsonaut_protocol::ActivitySummary {
+            scope: scope.to_owned(),
+            scope_id,
+            period_days: period_days.clamp(0, 3650),
+            qso_count: row.0,
+            unique_callsigns: row.1,
+            band_count: row.2,
+            mode_count: row.3,
+            points: row.4,
+            last_qso_at: row.5,
+            status: if row.0 > 0 {
+                "active".to_owned()
+            } else {
+                "quiet".to_owned()
+            },
         })
+    }
+
+    pub async fn activity_visibility_policies(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<ActivityVisibility>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, String, Option<Uuid>, String, DateTime<Utc>)>(
+            "SELECT id,user_id,scope,scope_id,visibility,updated_at FROM activity_visibility_policies WHERE user_id=$1 ORDER BY scope,scope_id NULLS FIRST",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|row| ActivityVisibility { id: row.0, user_id: row.1, scope: row.2, scope_id: row.3, visibility: row.4, updated_at: row.5 })
+                .collect()
+        })
+    }
+
+    pub async fn set_activity_visibility(
+        &self,
+        user_id: Uuid,
+        input: &ActivityVisibilityInput,
+    ) -> Result<ActivityVisibility, sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query_as::<_, (Uuid, Uuid, String, Option<Uuid>, String, DateTime<Utc>)>(
+            "INSERT INTO activity_visibility_policies (id,user_id,scope,scope_id,visibility) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (user_id,scope,(COALESCE(scope_id,'00000000-0000-0000-0000-000000000000'::uuid))) DO UPDATE SET visibility=excluded.visibility,updated_at=now() RETURNING id,user_id,scope,scope_id,visibility,updated_at",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(input.scope.trim())
+        .bind(input.scope_id)
+        .bind(input.visibility.trim())
+        .fetch_one(&self.pool)
+        .await
+        .map(|row| ActivityVisibility { id: row.0, user_id: row.1, scope: row.2, scope_id: row.3, visibility: row.4, updated_at: row.5 })
     }
 
     pub async fn update_member_password_hash(
@@ -569,13 +982,15 @@ impl Store {
         device_name: &str,
         token_hash: &[u8],
         expires_at: DateTime<Utc>,
+        scopes: &Value,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO device_tokens (id, user_id, device_name, token_hash, expires_at) VALUES ($1,$2,$3,$4,$5)")
+        sqlx::query("INSERT INTO device_tokens (id, user_id, device_name, token_hash, expires_at, scopes) VALUES ($1,$2,$3,$4,$5,$6)")
             .bind(Uuid::new_v4())
             .bind(user_id)
             .bind(device_name.trim())
             .bind(token_hash)
             .bind(expires_at)
+            .bind(scopes)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -650,6 +1065,29 @@ impl Store {
         }))
     }
 
+    pub async fn device_token_scopes(
+        &self,
+        token_hash: &[u8],
+    ) -> Result<Option<Vec<String>>, sqlx::Error> {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT scopes FROM device_tokens WHERE token_hash=$1 AND expires_at > now()",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|value| {
+            value.map(|scopes| {
+                scopes
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+        })
+    }
+
     pub async fn delete_device_token(&self, token_hash: &[u8]) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM device_tokens WHERE token_hash=$1")
             .bind(token_hash)
@@ -688,7 +1126,30 @@ impl Store {
         input: &ClubInput,
         owner_id: Uuid,
     ) -> Result<Club, sqlx::Error> {
+        self.create_club_with_limit(input, owner_id, None)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn create_club_with_limit(
+        &self,
+        input: &ClubInput,
+        owner_id: Uuid,
+        max_clubs: Option<i64>,
+    ) -> Result<Option<Club>, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        if let Some(limit) = max_clubs {
+            sqlx::query("SELECT pg_advisory_xact_lock(7265734)")
+                .execute(&mut *tx)
+                .await?;
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM clubs")
+                .fetch_one(&mut *tx)
+                .await?;
+            if count >= limit {
+                tx.rollback().await?;
+                return Ok(None);
+            }
+        }
         let id = Uuid::new_v4();
         let row = sqlx::query_as::<_, (Uuid, String, Option<String>, String)>("INSERT INTO clubs (id, name, callsign, description) VALUES ($1, $2, $3, $4) RETURNING id, name, callsign, description")
             .bind(id).bind(input.name.trim()).bind(input.callsign.as_deref()).bind(input.description.trim()).fetch_one(&mut *tx).await?;
@@ -698,7 +1159,7 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(Club {
+        Ok(Some(Club {
             id: row.0,
             name: row.1,
             callsign: row.2,
@@ -708,7 +1169,7 @@ impl Store {
             my_role: Some("owner".to_owned()),
             join_request_status: None,
             can_manage: true,
-        })
+        }))
     }
 
     pub async fn club_governance(&self, club_id: Uuid) -> Result<ClubGovernance, sqlx::Error> {
@@ -871,13 +1332,13 @@ impl Store {
     }
 
     pub async fn events(&self) -> Result<Vec<Event>, sqlx::Error> {
-        sqlx::query_as::<_, EventRow>("SELECT id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config FROM events ORDER BY starts_at")
+        sqlx::query_as::<_, EventRow>("SELECT e.id, e.club_id, e.name, e.contest_name, e.special_callsign, e.starts_at, e.ends_at, e.status, e.contest_template_id, e.contest_config, (SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=e.id)::bigint AS participant_count FROM events e ORDER BY e.starts_at")
             .fetch_all(&self.pool).await.map(|rows| rows.into_iter().map(Event::from).collect())
     }
 
     pub async fn create_event(&self, input: &EventInput) -> Result<Event, sqlx::Error> {
         let id = Uuid::new_v4();
-        sqlx::query_as::<_, EventRow>("INSERT INTO events (id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config")
+        sqlx::query_as::<_, EventRow>("INSERT INTO events (id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config, 0::bigint AS participant_count")
             .bind(id).bind(input.club_id).bind(input.name.trim()).bind(input.contest_name.trim()).bind(input.special_callsign.as_deref()).bind(input.starts_at).bind(input.ends_at).bind(input.status.as_str()).bind(input.contest_template_id).bind(&input.contest_config)
             .fetch_one(&self.pool).await.map(Event::from)
     }
@@ -887,8 +1348,17 @@ impl Store {
         event_id: Uuid,
         status: EventStatus,
     ) -> Result<Option<Event>, sqlx::Error> {
-        sqlx::query_as::<_, EventRow>("UPDATE events SET status=$2, updated_at=now() WHERE id=$1 RETURNING id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config")
+        sqlx::query_as::<_, EventRow>("WITH updated AS (UPDATE events SET status=$2, updated_at=now() WHERE id=$1 RETURNING id,club_id,name,contest_name,special_callsign,starts_at,ends_at,status,contest_template_id,contest_config) SELECT u.id,u.club_id,u.name,u.contest_name,u.special_callsign,u.starts_at,u.ends_at,u.status,u.contest_template_id,u.contest_config,(SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=u.id)::bigint AS participant_count FROM updated u")
             .bind(event_id).bind(status.as_str()).fetch_optional(&self.pool).await.map(|row| row.map(Event::from))
+    }
+
+    pub async fn update_event(
+        &self,
+        event_id: Uuid,
+        input: &EventUpdateInput,
+    ) -> Result<Option<Event>, sqlx::Error> {
+        sqlx::query_as::<_, EventRow>("WITH updated AS (UPDATE events SET club_id=$2,name=$3,contest_name=$4,special_callsign=$5,starts_at=$6,ends_at=$7,status=$8,contest_template_id=$9,contest_config=$10,updated_at=now() WHERE id=$1 RETURNING id,club_id,name,contest_name,special_callsign,starts_at,ends_at,status,contest_template_id,contest_config) SELECT u.id,u.club_id,u.name,u.contest_name,u.special_callsign,u.starts_at,u.ends_at,u.status,u.contest_template_id,u.contest_config,(SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=u.id)::bigint AS participant_count FROM updated u")
+            .bind(event_id).bind(input.club_id).bind(input.name.trim()).bind(input.contest_name.trim()).bind(input.special_callsign.as_deref()).bind(input.starts_at).bind(input.ends_at).bind(input.status.as_str()).bind(input.contest_template_id).bind(&input.contest_config).fetch_optional(&self.pool).await.map(|row| row.map(Event::from))
     }
 
     pub async fn station_presence(
@@ -946,9 +1416,19 @@ impl Store {
             .ok_or(sqlx::Error::RowNotFound)
     }
 
-    pub async fn qso_logs(&self, limit: i64) -> Result<Vec<QsoLog>, sqlx::Error> {
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id ORDER BY q.occurred_at DESC LIMIT $1")
-            .bind(limit).fetch_all(&self.pool).await.map(|rows| rows.into_iter().map(QsoLog::from).collect())
+    pub async fn qso_logs_for_viewer(
+        &self,
+        viewer_id: Uuid,
+        is_administrator: bool,
+        limit: i64,
+    ) -> Result<Vec<QsoLog>, sqlx::Error> {
+        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='contest' AND p.scope_id=q.event_id LIMIT 1) contest_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='club' AND p.scope_id=e.club_id LIMIT 1) club_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='overall' AND p.scope_id IS NULL LIMIT 1) overall_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='global' OR (q.event_id IS NOT NULL AND COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='members' AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=e.club_id AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3")
+            .bind(is_administrator)
+            .bind(viewer_id)
+            .bind(limit.clamp(1, 1000))
+            .fetch_all(&self.pool)
+            .await
+            .map(|rows| rows.into_iter().map(QsoLog::from).collect())
     }
 
     pub async fn create_qso_log(
@@ -956,11 +1436,142 @@ impl Store {
         user_id: Uuid,
         input: &QsoLogInput,
     ) -> Result<QsoLog, sqlx::Error> {
+        // Retries are expected when a native client reconnects. Resolve the
+        // existing record before inserting so a successful retry is a normal
+        // success response rather than a unique-constraint error.
+        if let Some(existing) = sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
+            .bind(user_id)
+            .bind(input.idempotency_key)
+            .fetch_optional(&self.pool)
+            .await?
+        {
+            return Ok(existing.into());
+        }
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO qso_logs (id,user_id,event_id,idempotency_key,callsign,band,mode,frequency_hz,occurred_at,rst_sent,rst_received,exchange,points,source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        let insert = sqlx::query("INSERT INTO qso_logs (id,user_id,event_id,visibility,visibility_club_id,idempotency_key,callsign,band,mode,frequency_hz,occurred_at,rst_sent,rst_received,exchange,points,source) VALUES ($1,$2,$3,'private',NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (user_id,idempotency_key) DO NOTHING")
             .bind(id).bind(user_id).bind(input.event_id).bind(input.idempotency_key).bind(input.callsign.trim().to_ascii_uppercase()).bind(input.band.trim()).bind(input.mode.trim().to_ascii_uppercase()).bind(input.frequency_hz).bind(input.occurred_at).bind(input.rst_sent.as_deref()).bind(input.rst_received.as_deref()).bind(&input.exchange).bind(input.points).bind(input.source.trim()).execute(&self.pool).await?;
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1")
+        if insert.rows_affected() == 0 {
+            return sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
+                .bind(user_id).bind(input.idempotency_key).fetch_one(&self.pool).await.map(Into::into);
+        }
+        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1")
             .bind(id).fetch_one(&self.pool).await.map(QsoLog::from)
+    }
+
+    pub async fn qso_log_owner(&self, log_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar("SELECT user_id FROM qso_logs WHERE id=$1")
+            .bind(log_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn active_club_member(
+        &self,
+        user_id: Uuid,
+        club_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM club_members WHERE user_id=$1 AND club_id=$2 AND membership_status='active')")
+            .bind(user_id)
+            .bind(club_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn event_club_id(&self, event_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar("SELECT club_id FROM events WHERE id=$1")
+            .bind(event_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn club_exists(&self, club_id: Uuid) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM clubs WHERE id=$1)")
+            .bind(club_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn create_qso_share_link(
+        &self,
+        qso_log_id: Uuid,
+        created_by: Uuid,
+        token_hash: &[u8],
+        expires_at: DateTime<Utc>,
+    ) -> Result<Uuid, sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO qso_share_links (id,qso_log_id,created_by,token_hash,expires_at) VALUES ($1,$2,$3,$4,$5)")
+            .bind(id)
+            .bind(qso_log_id)
+            .bind(created_by)
+            .bind(token_hash)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(id)
+    }
+
+    pub async fn shared_qso_log(&self, token_hash: &[u8]) -> Result<Option<QsoLog>, sqlx::Error> {
+        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()")
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(QsoLog::from))
+    }
+
+    pub async fn revoke_qso_share_link(
+        &self,
+        share_id: Uuid,
+        user_id: Uuid,
+        is_administrator: bool,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(sqlx::query(
+            "UPDATE qso_share_links SET revoked_at=now() WHERE id=$1 AND (created_by=$2 OR $3)",
+        )
+        .bind(share_id)
+        .bind(user_id)
+        .bind(is_administrator)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
+    pub async fn qso_share_links_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<ShareLinkRecord>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, DateTime<Utc>, String, DateTime<Utc>, Option<DateTime<Utc>>, DateTime<Utc>)>(
+            "SELECT s.id,s.qso_log_id,q.occurred_at,q.callsign,s.expires_at,s.revoked_at,s.created_at FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id WHERE s.created_by=$1 ORDER BY s.created_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().map(|row| ShareLinkRecord { id: row.0, qso_log_id: row.1, occurred_at: row.2, worked_callsign: row.3, expires_at: row.4, revoked_at: row.5, created_at: row.6 }).collect())
+    }
+
+    pub async fn record_audit_event(
+        &self,
+        actor_user_id: Option<Uuid>,
+        action: &str,
+        target_type: &str,
+        target_id: Option<Uuid>,
+        metadata: &Value,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO audit_events (id,actor_user_id,action,target_type,target_id,metadata) VALUES ($1,$2,$3,$4,$5,$6)")
+            .bind(Uuid::new_v4()).bind(actor_user_id).bind(action).bind(target_type).bind(target_id).bind(metadata).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn purge_expired_artifacts(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM access_challenges WHERE expires_at <= now()")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM diagnostic_reports WHERE created_at < now() - interval '30 days'")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM qso_share_links WHERE (revoked_at IS NOT NULL AND revoked_at < now() - interval '30 days') OR expires_at < now() - interval '30 days'")
+            .execute(&self.pool).await?;
+        Ok(())
     }
 
     pub async fn channel_messages(&self, limit: i64) -> Result<Vec<ChannelMessage>, sqlx::Error> {
@@ -987,5 +1598,17 @@ impl Store {
             .fetch_one(&self.pool)
             .await
             .map(ChannelMessage::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_preserve_last_administrator;
+
+    #[test]
+    fn protects_the_last_administrator_only_when_downgrading_one() {
+        assert!(should_preserve_last_administrator(1, true));
+        assert!(!should_preserve_last_administrator(2, true));
+        assert!(!should_preserve_last_administrator(1, false));
     }
 }

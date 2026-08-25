@@ -30,9 +30,75 @@ pub struct ServiceInfo {
     pub excludes: Vec<String>,
 }
 
+/// Deployment capabilities advertised to clients and the management UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ServerCapabilities {
+    pub edition: String,
+    pub max_clubs: Option<i64>,
+    pub features: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SetupStatus {
     pub setup_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccessChallenge {
+    pub id: Uuid,
+    pub question: String,
+    pub expires_at: DateTime<Utc>,
+    pub attempts_remaining: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccessCallsignLookup {
+    pub callsign: String,
+    pub display_name: String,
+    pub grid: String,
+    pub license_class: String,
+    pub license_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccessRequestInput {
+    pub challenge_id: Uuid,
+    pub challenge_answer: String,
+    pub callsign: String,
+    pub email: String,
+    #[serde(default)]
+    pub club_name: String,
+    #[serde(default)]
+    pub referral_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccessRequest {
+    pub id: Uuid,
+    pub callsign: String,
+    pub email: String,
+    pub club_name: String,
+    pub referral_source: String,
+    pub hamdb_display_name: String,
+    pub hamdb_grid: String,
+    pub hamdb_license_class: String,
+    pub hamdb_license_status: String,
+    pub status: String,
+    pub reviewed_at: Option<DateTime<Utc>>,
+    pub reviewed_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccessRequestDecisionInput {
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccessDecisionResult {
+    pub request: AccessRequest,
+    pub user: Option<CurrentUser>,
+    pub temporary_password: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -54,6 +120,97 @@ pub struct CurrentUser {
     pub callsign: String,
     pub display_name: String,
     pub global_role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProfileUpdateInput {
+    pub display_name: String,
+    #[serde(default)]
+    pub grid: String,
+    #[serde(default)]
+    pub qth: String,
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub middle_name: String,
+    #[serde(default)]
+    pub surname: String,
+    #[serde(default)]
+    pub suffix: String,
+    #[serde(default)]
+    pub license_class: String,
+    #[serde(default)]
+    pub license_status: String,
+    #[serde(default)]
+    pub license_expires_on: Option<NaiveDate>,
+    #[serde(default)]
+    pub address_line_1: String,
+    #[serde(default)]
+    pub address_line_2: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub postal_code: String,
+    #[serde(default)]
+    pub country: String,
+    #[serde(default)]
+    pub latitude: String,
+    #[serde(default)]
+    pub longitude: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UserProfile {
+    pub user: CurrentUser,
+    pub grid: String,
+    pub qth: String,
+    pub first_name: String,
+    pub middle_name: String,
+    pub surname: String,
+    pub suffix: String,
+    pub license_class: String,
+    pub license_status: String,
+    pub license_expires_on: Option<NaiveDate>,
+    pub address_line_1: String,
+    pub address_line_2: String,
+    pub state: String,
+    pub postal_code: String,
+    pub country: String,
+    pub latitude: String,
+    pub longitude: String,
+    pub hamdb_fetched_at: Option<DateTime<Utc>>,
+    pub hamdb_last_error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivitySummary {
+    pub scope: String,
+    pub scope_id: Option<Uuid>,
+    pub period_days: i32,
+    pub qso_count: i64,
+    pub unique_callsigns: i64,
+    pub band_count: i64,
+    pub mode_count: i64,
+    pub points: i64,
+    pub last_qso_at: Option<DateTime<Utc>>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivityVisibility {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub scope: String,
+    pub scope_id: Option<Uuid>,
+    pub visibility: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivityVisibilityInput {
+    pub scope: String,
+    pub scope_id: Option<Uuid>,
+    pub visibility: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -95,6 +252,8 @@ pub struct MemberInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct MemberUpdateInput {
     pub display_name: String,
+    #[serde(default)]
+    pub global_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -314,6 +473,7 @@ pub struct Event {
     pub status: EventStatus,
     pub contest_template_id: Option<Uuid>,
     pub contest_config: serde_json::Value,
+    pub participant_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -335,6 +495,22 @@ pub struct EventInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct EventStatusInput {
     pub status: EventStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EventUpdateInput {
+    pub club_id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub contest_name: String,
+    pub special_callsign: Option<String>,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    pub status: EventStatus,
+    #[serde(default)]
+    pub contest_template_id: Option<Uuid>,
+    #[serde(default = "default_json_object")]
+    pub contest_config: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -398,6 +574,8 @@ pub struct QsoLog {
     pub operator_callsign: String,
     pub event_id: Option<Uuid>,
     pub event_name: Option<String>,
+    pub visibility: String,
+    pub visibility_club_id: Option<Uuid>,
     pub idempotency_key: Uuid,
     pub callsign: String,
     pub band: String,
@@ -414,6 +592,10 @@ pub struct QsoLog {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct QsoLogInput {
     pub event_id: Option<Uuid>,
+    #[serde(default = "default_qso_visibility")]
+    pub visibility: String,
+    #[serde(default)]
+    pub visibility_club_id: Option<Uuid>,
     pub idempotency_key: Uuid,
     pub callsign: String,
     pub band: String,
@@ -428,6 +610,69 @@ pub struct QsoLogInput {
     pub points: i32,
     #[serde(default = "default_qso_source")]
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ShareLinkInput {
+    #[serde(default = "default_share_expiry_days")]
+    pub expires_in_days: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ShareLink {
+    pub id: Uuid,
+    pub share_path: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SharedQsoDetail {
+    pub operator_callsign: String,
+    pub event_name: Option<String>,
+    pub callsign: String,
+    pub band: String,
+    pub mode: String,
+    pub frequency_hz: Option<i64>,
+    pub occurred_at: DateTime<Utc>,
+    pub rst_sent: Option<String>,
+    pub rst_received: Option<String>,
+    pub exchange: serde_json::Value,
+    pub points: i32,
+    pub source: String,
+}
+
+impl From<QsoLog> for SharedQsoDetail {
+    fn from(log: QsoLog) -> Self {
+        Self {
+            operator_callsign: log.operator_callsign,
+            event_name: log.event_name,
+            callsign: log.callsign,
+            band: log.band,
+            mode: log.mode,
+            frequency_hz: log.frequency_hz,
+            occurred_at: log.occurred_at,
+            rst_sent: log.rst_sent,
+            rst_received: log.rst_received,
+            exchange: log.exchange,
+            points: log.points,
+            source: log.source,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ShareLinkRecord {
+    pub id: Uuid,
+    pub qso_log_id: Uuid,
+    pub occurred_at: DateTime<Utc>,
+    pub worked_callsign: String,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+fn default_share_expiry_days() -> i64 {
+    7
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -508,6 +753,7 @@ pub enum ServerMessage {
     },
     Snapshot {
         events: Vec<Event>,
+        clubs: Vec<Club>,
         contest_templates: Vec<ContestTemplate>,
         channel_messages: Vec<ChannelMessage>,
     },
@@ -525,6 +771,52 @@ pub enum ServerMessage {
 
 fn default_qso_source() -> String {
     "qsonaut".to_owned()
+}
+
+fn default_qso_visibility() -> String {
+    "private".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QsoLog, SharedQsoDetail};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    #[test]
+    fn public_qso_detail_omits_internal_identifiers_and_visibility_state() {
+        let detail = SharedQsoDetail::from(QsoLog {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            operator_callsign: "N7UF".to_owned(),
+            event_id: Some(Uuid::new_v4()),
+            event_name: Some("Field Day".to_owned()),
+            visibility: "private".to_owned(),
+            visibility_club_id: Some(Uuid::new_v4()),
+            idempotency_key: Uuid::new_v4(),
+            callsign: "W1AW".to_owned(),
+            band: "20m".to_owned(),
+            mode: "FT8".to_owned(),
+            frequency_hz: Some(14_074_000),
+            occurred_at: Utc::now(),
+            rst_sent: Some("-10".to_owned()),
+            rst_received: Some("-12".to_owned()),
+            exchange: serde_json::json!({}),
+            points: 1,
+            source: "qsonaut".to_owned(),
+        });
+        let value = serde_json::to_value(detail).expect("shared detail serializes");
+        for internal in [
+            "id",
+            "user_id",
+            "event_id",
+            "visibility",
+            "visibility_club_id",
+            "idempotency_key",
+        ] {
+            assert!(value.get(internal).is_none(), "leaked {internal}");
+        }
+    }
 }
 
 fn default_json_object() -> serde_json::Value {

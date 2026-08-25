@@ -1,13 +1,31 @@
 <script lang="ts">
   import { api, formatFrequency } from './api';
-  import type { Club, MemberDetail, User } from './types';
+  import type { AccessRequest, Club, MemberDetail, User } from './types';
 
-  let { members, clubs, refresh }: { members: User[]; clubs: Club[]; refresh: () => Promise<void> } = $props();
+  let { members, clubs, accessRequests, refresh }: { members: User[]; clubs: Club[]; accessRequests: AccessRequest[]; refresh: () => Promise<void> } = $props();
+  let pendingAccessRequests = $derived(accessRequests.filter((item) => item.status === 'pending'));
+  let accessSearch = $state('');
+  let visibleAccessRequests = $derived(pendingAccessRequests.filter((request) => {
+    const query = accessSearch.trim().toLowerCase();
+    return !query || `${request.callsign} ${request.hamdb_display_name} ${request.email} ${request.club_name}`.toLowerCase().includes(query);
+  }));
+  let memberSearch = $state('');
+  let memberRoleFilter = $state('all');
+  let memberPage = $state(1);
+  const memberPageSize = 25;
+  let filteredMembers = $derived(members.filter((member) => {
+    const query = memberSearch.trim().toLowerCase();
+    return (!query || `${member.callsign} ${member.display_name}`.toLowerCase().includes(query))
+      && (memberRoleFilter === 'all' || member.global_role === memberRoleFilter);
+  }));
+  let memberPageCount = $derived(Math.max(1, Math.ceil(filteredMembers.length / memberPageSize)));
+  let visibleMembers = $derived(filteredMembers.slice((memberPage - 1) * memberPageSize, memberPage * memberPageSize));
   let selected = $state<MemberDetail | null>(null);
   let displayName = $state('');
   let newPassword = $state('');
   let assignClub = $state('');
   let role = $state('operator');
+  let globalRole = $state('member');
   let memberCall = $state('');
   let memberName = $state('');
   let memberPassword = $state('');
@@ -29,6 +47,7 @@
     await run(async () => {
       selected = await api<MemberDetail>(`/api/v1/members/${id}`);
       displayName = selected.user.display_name;
+      globalRole = selected.user.global_role;
     });
   }
 
@@ -54,7 +73,7 @@
     if (!selected) return;
     await run(async () => {
       await api(`/api/v1/members/${selected!.user.id}`, {
-        method: 'PATCH', body: JSON.stringify({ display_name: displayName }),
+        method: 'PATCH', body: JSON.stringify({ display_name: displayName, global_role: globalRole }),
       });
       await refresh(); await reloadSelected(); notice = 'Operator profile updated.';
     });
@@ -87,20 +106,52 @@
       await reloadSelected(); notice = 'Club assignment removed.';
     });
   }
+
+  async function decideAccess(request: AccessRequest, decision: 'approved' | 'rejected') {
+    await run(async () => {
+      const result = await api<{ temporary_password?: string }>(`/api/v1/access/requests/${request.id}`, { method: 'PATCH', body: JSON.stringify({ decision }) });
+      await refresh();
+      notice = result.temporary_password
+        ? `${request.callsign} account created. Temporary password (copy now; it is shown only once): ${result.temporary_password}`
+        : `${request.callsign} access request ${decision}.`;
+    });
+  }
+
+  function resetMemberPage() { memberPage = 1; }
 </script>
 
 <section class="member-layout">
   {#if error}<p class="error member-banner">{error}</p>{/if}
   {#if notice}<p class="notice member-banner">{notice}</p>{/if}
   <div>
+    <section class="subsection access-requests">
+      <p class="eyebrow amber">ACCESS / PENDING REVIEW</p>
+      <div class="list-heading"><h2>Join requests</h2><small>{pendingAccessRequests.length} pending</small></div>
+      <div class="list-tools"><input aria-label="Search access requests" placeholder="Search callsign, email, or club" bind:value={accessSearch} /></div>
+      {#if pendingAccessRequests.length === 0}
+        <p class="empty">No pending access requests.</p>
+      {:else if visibleAccessRequests.length === 0}
+        <p class="empty">No requests match the current search.</p>
+      {:else}
+        {#each visibleAccessRequests as request}
+          <article class="membership"><span><b>{request.callsign}</b><small>{request.hamdb_display_name || 'HamDB name unavailable'} · {request.email}</small><small>{request.club_name || 'No club specified'} · {request.referral_source || 'No referral provided'}</small></span><span><button onclick={() => decideAccess(request, 'approved')} disabled={working}>APPROVE</button><button class="danger" onclick={() => decideAccess(request, 'rejected')} disabled={working}>REJECT</button></span></article>
+        {/each}
+      {/if}
+    </section>
     <p class="eyebrow">PEOPLE / CLICK TO MANAGE</p>
-    <h2>Operators</h2>
-    {#each members as member}
-      <button class:active={selected?.user.id === member.id} class="member-row" onclick={() => openMember(member.id)}>
-        <span><b>{member.callsign}</b><small>{member.display_name}</small></span>
-        <em>{member.global_role}</em>
-      </button>
-    {/each}
+    <div class="list-heading"><h2>Operators</h2><small>{filteredMembers.length} of {members.length}</small></div>
+    <div class="list-tools"><input aria-label="Search operators" placeholder="Search callsign or name" bind:value={memberSearch} oninput={resetMemberPage} /><select aria-label="Filter operators by role" bind:value={memberRoleFilter} onchange={resetMemberPage}><option value="all">All roles</option><option value="administrator">Administrators</option><option value="member">Members</option></select></div>
+    {#if visibleMembers.length === 0}
+      <p class="empty">No operators match the current filters.</p>
+    {:else}
+      {#each visibleMembers as member}
+        <button class:active={selected?.user.id === member.id} class="member-row" onclick={() => openMember(member.id)}>
+          <span><b>{member.callsign}</b><small>{member.display_name}</small></span>
+          <em>{member.global_role}</em>
+        </button>
+      {/each}
+      <div class="list-pager"><button class="secondary" disabled={memberPage <= 1} onclick={() => memberPage -= 1}>PREVIOUS</button><small>PAGE {memberPage} / {memberPageCount}</small><button class="secondary" disabled={memberPage >= memberPageCount} onclick={() => memberPage += 1}>NEXT</button></div>
+    {/if}
     <form class="compact" onsubmit={(event) => { event.preventDefault(); createMember(); }}>
       <h3>Add operator</h3>
       <label>Callsign<input maxlength="16" bind:value={memberCall} required /></label>
@@ -116,6 +167,7 @@
       <form class="compact" onsubmit={(event) => { event.preventDefault(); saveProfile(); }}>
         <h3>Identity</h3>
         <label>Display name<input maxlength="100" bind:value={displayName} required /></label>
+        <label>Global access<select bind:value={globalRole}><option value="member">member</option><option value="administrator">administrator</option></select></label>
         <button disabled={working}>SAVE PROFILE</button>
       </form>
 
@@ -150,3 +202,14 @@
     {/if}
   </div>
 </section>
+
+<style>
+  .list-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+  .list-heading h2 { margin-bottom:0; }
+  .list-heading small, .list-pager small { color:var(--muted); }
+  .list-tools { display:grid; grid-template-columns:1fr 180px; gap:8px; margin:12px 0; }
+  .list-tools input, .list-tools select { min-width:0; width:100%; box-sizing:border-box; }
+  .list-pager { display:flex; align-items:center; justify-content:center; gap:14px; margin:14px 0 24px; }
+  .list-pager .secondary { padding:7px 10px; }
+  @media (max-width:600px) { .list-tools { grid-template-columns:1fr; } }
+</style>

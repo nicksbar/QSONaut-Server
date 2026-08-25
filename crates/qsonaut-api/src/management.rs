@@ -1,25 +1,30 @@
 use crate::{
     AppState,
     auth::{
-        hash_password, normalize_call, require_admin, require_user, validate_callsign,
+        hash_password, normalize_call, require_admin, require_user, token_hash, validate_callsign,
         validate_display_name, validate_identity, validate_password,
     },
     error::{HttpError, HttpResult},
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use axum_extra::extract::cookie::CookieJar;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{Duration as ChronoDuration, Utc};
 use qsonaut_protocol::{
-    ChannelMessage, Club, ClubElection, ClubElectionInput, ClubElectionStatusInput, ClubGovernance,
-    ClubInput, ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
-    ClubPosition, ClubPositionAssignment, ClubPositionAssignmentInput, ClubPositionInput,
-    ContestTemplate, CurrentUser, DiagnosticReport, Event, EventInput, EventStatusInput,
+    ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club,
+    ClubElection, ClubElectionInput, ClubElectionStatusInput, ClubGovernance, ClubInput,
+    ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ClubPosition,
+    ClubPositionAssignment, ClubPositionAssignmentInput, ClubPositionInput, ContestTemplate,
+    CurrentUser, DiagnosticReport, Event, EventInput, EventStatusInput, EventUpdateInput,
     MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput, QsoLog, QsoLogInput,
-    StationPresence, StationPresenceInput,
+    ShareLink, ShareLinkInput, ShareLinkRecord, SharedQsoDetail, StationPresence,
+    StationPresenceInput,
 };
+use rand::RngCore;
 use uuid::Uuid;
 
 #[utoipa::path(get, path = "/api/v1/members", tag = "management", responses((status = 200, body = [CurrentUser]), (status = 403, description = "Administrator required")))]
@@ -81,12 +86,27 @@ pub(crate) async fn update_member(
 ) -> HttpResult<Json<CurrentUser>> {
     require_admin(&state, &jar).await?;
     validate_display_name(&input.display_name)?;
-    state
+    let current = state
         .store
-        .update_member_display_name(member_id, input.display_name.trim())
+        .user(member_id)
         .await?
-        .map(Json)
-        .ok_or_else(HttpError::not_found)
+        .ok_or_else(HttpError::not_found)?;
+    let requested_role = input.global_role.as_deref().unwrap_or(&current.global_role);
+    if !["administrator", "member"].contains(&requested_role) {
+        return Err(HttpError::bad_request("invalid global role"));
+    }
+    let updated = state
+        .store
+        .update_member_profile(member_id, input.display_name.trim(), requested_role)
+        .await?
+        .ok_or_else(|| {
+            if current.global_role == "administrator" && requested_role == "member" {
+                HttpError::conflict("the server must keep at least one administrator")
+            } else {
+                HttpError::not_found()
+            }
+        })?;
+    Ok(Json(updated))
 }
 #[utoipa::path(post, path = "/api/v1/members/{member_id}/password", tag = "management", params(("member_id" = Uuid, Path)), request_body = PasswordResetInput, responses((status = 204, description = "Password changed and existing sessions revoked")))]
 pub(crate) async fn reset_member_password(
@@ -214,7 +234,18 @@ pub(crate) async fn create_club(
         .callsign
         .map(|call| call.trim().to_ascii_uppercase())
         .filter(|call| !call.is_empty());
-    Ok(Json(state.store.create_club(&input, user.id).await?))
+    let club = state
+        .store
+        .create_club_with_limit(&input, user.id, state.policy.max_clubs)
+        .await?
+        .ok_or_else(|| {
+            HttpError::conflict(format!(
+                "the {} edition supports up to {} clubs; this limit is removed by the hosted extension",
+                state.policy.edition,
+                state.policy.max_clubs.unwrap_or_default()
+            ))
+        })?;
+    Ok(Json(club))
 }
 
 #[utoipa::path(post, path = "/api/v1/clubs/{club_id}/join-requests", tag = "management", params(("club_id" = Uuid, Path)), responses((status = 200, body = ClubJoinRequest)))]
@@ -281,7 +312,8 @@ pub(crate) async fn club_governance(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<ClubGovernance>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_club_manager(&state, &user, club_id).await?;
     Ok(Json(state.store.club_governance(club_id).await?))
 }
 
@@ -434,9 +466,10 @@ pub(crate) async fn create_event(
     Json(mut input): Json<EventInput>,
 ) -> HttpResult<Json<Event>> {
     require_admin(&state, &jar).await?;
-    if input.name.trim().is_empty() {
-        return Err(HttpError::bad_request("event name is required"));
+    if !state.store.club_exists(input.club_id).await? {
+        return Err(HttpError::bad_request("unknown club"));
     }
+    validate_event_identity(&input.name, input.special_callsign.as_deref())?;
     if input.ends_at <= input.starts_at {
         return Err(HttpError::bad_request("event end must be after its start"));
     }
@@ -475,6 +508,48 @@ pub(crate) async fn set_event_status(
         .await?
         .map(Json)
         .ok_or_else(HttpError::not_found)
+}
+
+#[utoipa::path(patch, path = "/api/v1/events/{event_id}", tag = "management", params(("event_id" = Uuid, Path)), request_body = EventUpdateInput, responses((status = 200, body = Event), (status = 404, description = "Event not found")))]
+pub(crate) async fn update_event(
+    Path(event_id): Path<Uuid>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(mut input): Json<EventUpdateInput>,
+) -> HttpResult<Json<Event>> {
+    require_admin(&state, &jar).await?;
+    if !state.store.club_exists(input.club_id).await? {
+        return Err(HttpError::bad_request("unknown club"));
+    }
+    validate_event_identity(&input.name, input.special_callsign.as_deref())?;
+    if input.ends_at <= input.starts_at {
+        return Err(HttpError::bad_request("event end must be after its start"));
+    }
+    if let Some(template_id) = input.contest_template_id {
+        let template = state
+            .store
+            .contest_templates()
+            .await?
+            .into_iter()
+            .find(|template| template.id == template_id)
+            .ok_or_else(|| HttpError::bad_request("unknown contest template"))?;
+        validate_contest_configuration(&template, &input.contest_config)?;
+        input.contest_name = template.name;
+    } else {
+        input.contest_name.clear();
+        input.contest_config = serde_json::json!({});
+    }
+    input.special_callsign = input
+        .special_callsign
+        .map(|call| call.trim().to_ascii_uppercase())
+        .filter(|call| !call.is_empty());
+    Ok(Json(
+        state
+            .store
+            .update_event(event_id, &input)
+            .await?
+            .ok_or_else(HttpError::not_found)?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/stations", tag = "activity", responses((status = 200, body = [StationPresence])))]
@@ -519,8 +594,140 @@ pub(crate) async fn logs(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<QsoLog>>> {
-    require_admin(&state, &jar).await?;
-    Ok(Json(state.store.qso_logs(500).await?))
+    let user = require_user(&state, &jar).await?;
+    Ok(Json(
+        state
+            .store
+            .qso_logs_for_viewer(user.id, user.global_role == "administrator", 500)
+            .await?,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub(crate) struct ActivitySummaryQuery {
+    #[serde(default = "default_summary_scope")]
+    pub scope: String,
+    pub scope_id: Option<Uuid>,
+    #[serde(default = "default_summary_period")]
+    pub period_days: i32,
+}
+
+fn default_summary_scope() -> String {
+    "overall".to_owned()
+}
+fn default_summary_period() -> i32 {
+    30
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/activity/summary",
+    tag = "activity",
+    params(ActivitySummaryQuery),
+    responses((status = 200, body = ActivitySummary), (status = 400))
+)]
+pub(crate) async fn activity_summary(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<ActivitySummaryQuery>,
+) -> HttpResult<Json<ActivitySummary>> {
+    let user = require_user(&state, &jar).await?;
+    if !["overall", "club", "contest"].contains(&query.scope.as_str()) {
+        return Err(HttpError::bad_request("invalid activity summary scope"));
+    }
+    if !(0..=3650).contains(&query.period_days) {
+        return Err(HttpError::bad_request(
+            "activity period must be between 0 and 3650 days",
+        ));
+    }
+    if query.scope != "overall" && query.scope_id.is_none() {
+        return Err(HttpError::bad_request("this activity scope requires an id"));
+    }
+    if query.scope == "club" {
+        let club_id = query.scope_id.expect("validated above");
+        if user.global_role != "administrator"
+            && !state.store.active_club_member(user.id, club_id).await?
+        {
+            return Err(HttpError::forbidden());
+        }
+    }
+    if query.scope == "contest" {
+        let event_id = query.scope_id.expect("validated above");
+        let club_id = state
+            .store
+            .event_club_id(event_id)
+            .await?
+            .ok_or_else(HttpError::not_found)?;
+        if user.global_role != "administrator"
+            && !state.store.active_club_member(user.id, club_id).await?
+        {
+            return Err(HttpError::forbidden());
+        }
+    }
+    Ok(Json(
+        state
+            .store
+            .activity_summary(user.id, &query.scope, query.scope_id, query.period_days)
+            .await?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/activity/visibility", tag = "activity", responses((status = 200, body = [ActivityVisibility])))]
+pub(crate) async fn activity_visibility(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<ActivityVisibility>>> {
+    let user = require_user(&state, &jar).await?;
+    Ok(Json(
+        state.store.activity_visibility_policies(user.id).await?,
+    ))
+}
+
+#[utoipa::path(put, path = "/api/v1/activity/visibility", tag = "activity", request_body = ActivityVisibilityInput, responses((status = 200, body = ActivityVisibility), (status = 400)))]
+pub(crate) async fn set_activity_visibility(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<ActivityVisibilityInput>,
+) -> HttpResult<Json<ActivityVisibility>> {
+    let user = require_user(&state, &jar).await?;
+    if !["overall", "club", "contest"].contains(&input.scope.as_str()) {
+        return Err(HttpError::bad_request("invalid activity visibility scope"));
+    }
+    if !["private", "members", "global"].contains(&input.visibility.as_str()) {
+        return Err(HttpError::bad_request("invalid activity visibility"));
+    }
+    match input.scope.as_str() {
+        "overall" if input.scope_id.is_some() => {
+            return Err(HttpError::bad_request(
+                "overall visibility cannot have a target",
+            ));
+        }
+        "club" => {
+            let club_id = input
+                .scope_id
+                .ok_or_else(|| HttpError::bad_request("club visibility requires a club"))?;
+            if !state.store.active_club_member(user.id, club_id).await? {
+                return Err(HttpError::forbidden());
+            }
+        }
+        "contest" => {
+            let event_id = input
+                .scope_id
+                .ok_or_else(|| HttpError::bad_request("contest visibility requires a contest"))?;
+            let club_id = state
+                .store
+                .event_club_id(event_id)
+                .await?
+                .ok_or_else(HttpError::not_found)?;
+            if !state.store.active_club_member(user.id, club_id).await? {
+                return Err(HttpError::forbidden());
+            }
+        }
+        _ => {}
+    }
+    Ok(Json(
+        state.store.set_activity_visibility(user.id, &input).await?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/diagnostics", tag = "activity", responses((status = 200, body = [DiagnosticReport])))]
@@ -528,8 +735,58 @@ pub(crate) async fn diagnostics(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<qsonaut_protocol::DiagnosticReport>>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "diagnostics_inspected",
+            "diagnostic_reports",
+            None,
+            &serde_json::json!({"limit": 500}),
+        )
+        .await?;
     Ok(Json(state.store.diagnostic_reports(500).await?))
+}
+
+#[utoipa::path(get, path = "/api/v1/diagnostics/export", tag = "activity", responses((status = 200, body = [DiagnosticReport]), (status = 403)))]
+pub(crate) async fn export_diagnostics(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<qsonaut_protocol::DiagnosticReport>>> {
+    let user = require_admin(&state, &jar).await?;
+    let reports = state.store.diagnostic_reports(500).await?;
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "diagnostics_exported",
+            "diagnostic_reports",
+            None,
+            &serde_json::json!({"count": reports.len(), "limit": 500}),
+        )
+        .await?;
+    Ok(Json(reports))
+}
+
+#[utoipa::path(post, path = "/api/v1/diagnostics/retention/purge", tag = "activity", responses((status = 204, description = "Expired diagnostics and share artifacts removed"), (status = 403)))]
+pub(crate) async fn purge_retained_artifacts(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<StatusCode> {
+    let user = require_admin(&state, &jar).await?;
+    state.store.purge_expired_artifacts().await?;
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "retention_purge",
+            "retention",
+            None,
+            &serde_json::json!({"diagnostics_days": 30, "share_link_grace_days": 30}),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(get, path = "/api/v1/channel-messages", tag = "activity", responses((status = 200, body = [ChannelMessage])))]
@@ -570,6 +827,120 @@ pub(crate) async fn collect_log(
     Ok(Json(state.store.create_qso_log(user.id, &input).await?))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/logs/{log_id}/share",
+    tag = "activity",
+    params(("log_id" = Uuid, Path)),
+    request_body = ShareLinkInput,
+    responses((status = 200, body = ShareLink), (status = 404))
+)]
+pub(crate) async fn create_log_share(
+    Path(log_id): Path<Uuid>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<ShareLinkInput>,
+) -> HttpResult<Json<ShareLink>> {
+    let user = require_user(&state, &jar).await?;
+    let owner = state
+        .store
+        .qso_log_owner(log_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    if owner != user.id && user.global_role != "administrator" {
+        return Err(HttpError::forbidden());
+    }
+    if !(1..=30).contains(&input.expires_in_days) {
+        return Err(HttpError::bad_request(
+            "share expiry must be between 1 and 30 days",
+        ));
+    }
+    let mut bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let token = URL_SAFE_NO_PAD.encode(bytes);
+    let expires_at = Utc::now() + ChronoDuration::days(input.expires_in_days);
+    let id = state
+        .store
+        .create_qso_share_link(log_id, user.id, &token_hash(&token), expires_at)
+        .await?;
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "share_created",
+            "qso_log",
+            Some(log_id),
+            &serde_json::json!({"expires_at": expires_at}),
+        )
+        .await?;
+    Ok(Json(ShareLink {
+        id,
+        share_path: format!("/share/{token}"),
+        expires_at,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/share/{token}",
+    tag = "activity",
+    params(("token" = String, Path)),
+    responses((status = 200, body = SharedQsoDetail), (status = 404))
+)]
+pub(crate) async fn shared_log(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+) -> HttpResult<Json<SharedQsoDetail>> {
+    let log = state
+        .store
+        .shared_qso_log(&token_hash(&token))
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    Ok(Json(log.into()))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/shares/{share_id}",
+    tag = "activity",
+    params(("share_id" = Uuid, Path)),
+    responses((status = 204), (status = 404))
+)]
+pub(crate) async fn revoke_log_share(
+    Path(share_id): Path<Uuid>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<StatusCode> {
+    let user = require_user(&state, &jar).await?;
+    if !state
+        .store
+        .revoke_qso_share_link(share_id, user.id, user.global_role == "administrator")
+        .await?
+    {
+        return Err(HttpError::not_found());
+    }
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "share_revoked",
+            "share_link",
+            Some(share_id),
+            &serde_json::json!({}),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/api/v1/shares", tag = "activity", responses((status = 200, body = [ShareLinkRecord])))]
+pub(crate) async fn log_shares(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<Json<Vec<ShareLinkRecord>>> {
+    let user = require_user(&state, &jar).await?;
+    Ok(Json(state.store.qso_share_links_for_user(user.id).await?))
+}
+
 fn validate_contest_configuration(
     template: &ContestTemplate,
     contest_config: &serde_json::Value,
@@ -602,6 +973,18 @@ fn validate_contest_configuration(
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_event_identity(name: &str, special_callsign: Option<&str>) -> HttpResult<()> {
+    if name.trim().is_empty() || name.trim().chars().count() > 160 {
+        return Err(HttpError::bad_request(
+            "event name must contain 1 to 160 characters",
+        ));
+    }
+    if let Some(callsign) = special_callsign.filter(|callsign| !callsign.trim().is_empty()) {
+        validate_callsign(callsign)?;
     }
     Ok(())
 }
@@ -738,5 +1121,13 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn event_identity_requires_a_bounded_name_and_valid_special_callsign() {
+        assert!(validate_event_identity("Field Day", Some("W1AW/7")).is_ok());
+        assert!(validate_event_identity("", None).is_err());
+        assert!(validate_event_identity(&"x".repeat(161), None).is_err());
+        assert!(validate_event_identity("Field Day", Some("not a call sign")).is_err());
     }
 }

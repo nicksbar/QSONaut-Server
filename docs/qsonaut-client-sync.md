@@ -12,7 +12,19 @@ Presence is a last-known coordination snapshot. It grants no server authority ov
 
 An authenticated QSONaut client may submit an idempotent record to `POST /api/v1/logs`. Each record has a client-generated UUID, operator identity from the authenticated session, optional event, callsign, band, mode, optional frequency/RST/exchange fields, timestamp, points, and source.
 
-The server rejects duplicate idempotency keys rather than silently duplicating contacts. The management UI is intentionally read-only for QSO activity: operating and correction workflows remain in QSONaut until conflict-resolution and audit semantics are designed.
+The server treats a repeated idempotency key from the same authenticated operator as a retry and returns the already-stored record without creating a duplicate. The management UI is intentionally read-only for QSO activity: operating and correction workflows remain in QSONaut until conflict-resolution and audit semantics are designed.
+
+The management UI presents activity at the operator level: overall, for a
+club, or for a contest, with selectable time periods and a status badge. QSO
+records remain operating records rather than individually managed privacy
+objects. Operators control overall, club, and contest audiences through
+`/api/v1/activity/visibility`; contest and club policies override the overall
+policy. An authorized owner or administrator can create a short-lived
+revocable share grant through
+`POST /api/v1/logs/{log_id}/share`; the response contains a copyable path, and
+the public read endpoint does not expose the underlying log ID. The copied
+path opens a human-readable share page; `/api/v1/share/{token}` remains
+available for JSON consumers.
 
 ## Device authentication
 
@@ -28,13 +40,23 @@ is stored only as a SHA-256 hash by the server. Password resets revoke all
 browser sessions and device tokens for that operator. A client can revoke its
 current token with `DELETE /api/v1/auth/device`.
 
-The token has fixed `events:read`, `presence:write`, `logs:write`, `diagnostics:write`,
-`messages:read`, and `messages:write` capabilities. Browser cookies are never
-copied into QSONaut configuration.
+The token records explicit `events:read`, `presence:write`, `logs:write`,
+`diagnostics:write`, `messages:read`, and `messages:write` capabilities. The
+WebSocket checks the required capability for each operation; browser cookies
+are never copied into QSONaut configuration.
 
 The **Station link** page lists the signed-in operator's issued tokens with
 creation, expiry, and last-use timestamps. Operators may revoke a token or
 reissue it; a replacement secret is again displayed only once.
+
+## Operator profile and HamDB
+
+`GET /api/v1/auth/profile` and `PATCH /api/v1/auth/profile` expose the signed-in
+operator's editable profile. `POST /api/v1/auth/profile/hamdb` performs an
+explicit HamDB lookup and stores the normalized license/name/location record
+with a fetch timestamp. The server records provider failure state, does not
+block log ingestion when HamDB is unavailable, and does not include address,
+license, or coordinates in activity summaries, club rosters, or share links.
 
 ## Diagnostic snapshots
 

@@ -10,6 +10,14 @@
   let error = $state('');
   let notice = $state('');
   let devices = $state<DeviceTokenRecord[]>([]);
+  let deviceSearch = $state('');
+  let deviceStatus = $state('active');
+  let visibleDevices = $derived(devices.filter((device) => {
+    const query = deviceSearch.trim().toLowerCase();
+    const active = new Date(device.expires_at) > new Date();
+    return (!query || device.device_name.toLowerCase().includes(query))
+      && (deviceStatus === 'all' || (deviceStatus === 'active' ? active : !active));
+  }));
 
   async function loadDevices() {
     devices = await api<DeviceTokenRecord[]>('/api/v1/auth/devices');
@@ -105,9 +113,10 @@
 </div>
 
 <section class="subsection">
-  <div class="section-head"><div><p class="eyebrow cyan">ACTIVE ACCESS</p><h2>Issued station tokens</h2></div><button onclick={loadDevices}>REFRESH</button></div>
-  {#if devices.length === 0}<p class="empty">No active device tokens.</p>{/if}
-  {#each devices as device}
+  <div class="section-head"><div><p class="eyebrow cyan">ACTIVE ACCESS</p><h2>Issued station tokens</h2></div><div><b>{visibleDevices.length} of {devices.length}</b> <button onclick={loadDevices}>REFRESH</button></div></div>
+  <div class="list-tools"><input aria-label="Search station tokens" placeholder="Search station name" bind:value={deviceSearch} /><select aria-label="Filter station tokens" bind:value={deviceStatus}><option value="active">Active</option><option value="expired">Expired</option><option value="all">All tokens</option></select></div>
+  {#if devices.length === 0}<p class="empty">No active device tokens.</p>{:else if visibleDevices.length === 0}<p class="empty">No station tokens match the current filters.</p>{/if}
+  {#each visibleDevices as device}
     <article class="record">
       <div><strong>{device.device_name}</strong><p>Created {new Date(device.created_at).toLocaleString()} · expires {new Date(device.expires_at).toLocaleString()}</p><small>Last used {device.last_used_at ? new Date(device.last_used_at).toLocaleString() : 'never'}</small></div>
       <span class="pill">{new Date(device.expires_at) > new Date() ? 'active' : 'expired'}</span>
@@ -115,3 +124,9 @@
     </article>
   {/each}
 </section>
+
+<style>
+  .list-tools { display:flex; gap:8px; margin:10px 0 14px; }
+  .list-tools input { flex:1; min-width:0; }
+  .list-tools select { min-width:140px; }
+</style>
