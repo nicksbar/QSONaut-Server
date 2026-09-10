@@ -28,3 +28,9 @@ Board positions, officer assignments, election cycles, voting, and certification
 are intentionally not part of the public server. They are supplied by the
 private hosted companion. The public server keeps club identity, membership,
 rosters, join requests, and activity setup.
+# Event QSO authorization
+
+New event submissions require active owner/coordinator/operator membership;
+observers cannot contribute QSOs. Event state and occurrence time are checked
+in the database. See [migration details](contesting-migration.md). Membership
+does not itself authorize a club or special station callsign.

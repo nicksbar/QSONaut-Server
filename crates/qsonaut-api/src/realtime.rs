@@ -177,13 +177,7 @@ async fn handle_message(
                 .create_qso_log(user.id, &input)
                 .await
                 .map(ServerMessage::LogAccepted)
-                .map_err(|error| {
-                    if matches!(&error, sqlx::Error::Database(db) if db.is_unique_violation()) {
-                        "log event was already accepted".to_owned()
-                    } else {
-                        internal_error(&error)
-                    }
-                })
+                .map_err(|error| log_submission_error(&error))
         }
         ClientMessage::Diagnostic(input) => {
             require_scope(scopes, "diagnostics:write")?;
@@ -226,6 +220,19 @@ fn require_scope(scopes: &[String], required: &str) -> Result<(), String> {
     has_scope(scopes, required)
         .then_some(())
         .ok_or_else(|| format!("device token lacks required scope: {required}"))
+}
+
+fn log_submission_error(error: &sqlx::Error) -> String {
+    if let sqlx::Error::Database(db) = error
+        && db.code().as_deref() == Some("P1001")
+    {
+        return db.message().to_owned();
+    }
+    if matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()) {
+        "log event was already accepted".to_owned()
+    } else {
+        internal_error(error)
+    }
 }
 
 fn validate_channel_message(input: &qsonaut_protocol::ChannelMessageInput) -> Result<(), String> {

@@ -99,3 +99,9 @@ location / {
     proxy_set_header Connection "upgrade";
 }
 ```
+# Event submission validation increment
+
+The v1 contract now enforces event membership, state and QSO schedule in the
+database for all submission paths. Policy failures return validation messages.
+Existing accepted idempotency keys remain successful retries. See
+[migration and compatibility details](contesting-migration.md).
