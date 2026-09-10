@@ -61,6 +61,8 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
 
     let log = QsoLogInput {
         event_id: None,
+        operating_callsign: None,
+        callsign_id: None,
         visibility: "private".to_owned(),
         visibility_club_id: None,
         idempotency_key: Uuid::new_v4(),

@@ -6,7 +6,8 @@ use qsonaut_protocol::{
     AccessRequest, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
     ChannelMessageInput, Club, ClubInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
     ContestTemplate, CurrentUser, DiagnosticReport, DiagnosticReportInput, Event, EventInput,
-    EventStatus, EventUpdateInput, MemberClubRole, ProfileUpdateInput, QsoLog, QsoLogInput,
+    EventParticipant, EventParticipantInput, EventScore, EventStatus, EventUpdateInput,
+    ManagedCallsign, ManagedCallsignInput, MemberClubRole, ProfileUpdateInput, QsoLog, QsoLogInput,
     ShareLinkRecord, StationPresence, StationPresenceInput, UserProfile,
 };
 use serde_json::Value;
@@ -31,6 +32,7 @@ struct EventRow {
     ends_at: DateTime<Utc>,
     status: String,
     contest_template_id: Option<Uuid>,
+    contest_definition_version: Option<i32>,
     contest_config: Value,
     participant_count: i64,
 }
@@ -54,6 +56,7 @@ impl From<EventRow> for Event {
             ends_at: row.ends_at,
             status,
             contest_template_id: row.contest_template_id,
+            contest_definition_version: row.contest_definition_version,
             contest_config: row.contest_config,
             participant_count: row.participant_count,
         }
@@ -108,6 +111,15 @@ struct QsoLogRow {
     id: Uuid,
     user_id: Uuid,
     operator_callsign: String,
+    operating_callsign: Option<String>,
+    callsign_id: Option<Uuid>,
+    contest_template_id: Option<Uuid>,
+    contest_definition_version: Option<i32>,
+    contest_config: Value,
+    is_duplicate: bool,
+    multipliers: Value,
+    scoring_version: Option<String>,
+    scoring_explanation: String,
     event_id: Option<Uuid>,
     event_name: Option<String>,
     visibility: String,
@@ -293,6 +305,15 @@ impl From<QsoLogRow> for QsoLog {
             id: row.id,
             user_id: row.user_id,
             operator_callsign: row.operator_callsign,
+            operating_callsign: row.operating_callsign,
+            callsign_id: row.callsign_id,
+            contest_template_id: row.contest_template_id,
+            contest_definition_version: row.contest_definition_version,
+            contest_config: row.contest_config,
+            is_duplicate: row.is_duplicate,
+            multipliers: row.multipliers,
+            scoring_version: row.scoring_version,
+            scoring_explanation: row.scoring_explanation,
             event_id: row.event_id,
             event_name: row.event_name,
             visibility: row.visibility,
@@ -323,6 +344,7 @@ impl Store {
             .max_connections(10)
             .connect(database_url)
             .await?;
+        // Keep the embedded migration set sensitive to newly added migration files.
         sqlx::migrate!("../../migrations").run(&pool).await?;
         let store = Self { pool };
         store.sync_builtin_contests().await?;
@@ -1220,13 +1242,169 @@ impl Store {
     }
 
     pub async fn events(&self) -> Result<Vec<Event>, sqlx::Error> {
-        sqlx::query_as::<_, EventRow>("SELECT e.id, e.club_id, e.name, e.contest_name, e.special_callsign, e.starts_at, e.ends_at, e.status, e.contest_template_id, e.contest_config, (SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=e.id)::bigint AS participant_count FROM events e ORDER BY e.starts_at")
+        sqlx::query_as::<_, EventRow>("SELECT e.id, e.club_id, e.name, e.contest_name, e.special_callsign, e.starts_at, e.ends_at, e.status, e.contest_template_id, e.contest_definition_version, e.contest_config, (SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=e.id)::bigint AS participant_count FROM events e ORDER BY e.starts_at")
             .fetch_all(&self.pool).await.map(|rows| rows.into_iter().map(Event::from).collect())
+    }
+
+    pub async fn managed_callsigns_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<ManagedCallsign>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, String, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, String, DateTime<Utc>, Option<DateTime<Utc>>, String, String)>(
+            "SELECT c.id,c.callsign,c.identity_type,c.owner_user_id,c.club_id,c.event_id,c.status,c.effective_from,c.expires_at,c.verification_status,c.authority FROM managed_callsigns c WHERE c.owner_user_id=$1 OR (c.club_id IS NOT NULL AND EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=c.club_id AND m.user_id=$1 AND m.membership_status='active')) ORDER BY c.callsign",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().map(|r| ManagedCallsign {
+            id: r.0, callsign: r.1, identity_type: r.2, owner_user_id: r.3, club_id: r.4,
+            event_id: r.5, status: r.6, effective_from: r.7, expires_at: r.8,
+            verification_status: r.9, authority: r.10,
+        }).collect())
+    }
+
+    pub async fn create_special_callsign(
+        &self,
+        input: &ManagedCallsignInput,
+        verified: bool,
+        actor_user_id: Uuid,
+    ) -> Result<ManagedCallsign, sqlx::Error> {
+        let id = Uuid::new_v4();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO managed_callsigns (id,callsign,identity_type,club_id,event_id,status,verification_status,authority,authority_reference,effective_from,expires_at) SELECT $1,upper($2),'special',e.club_id,e.id,$3,$4,$5,$6,e.starts_at,e.ends_at FROM events e WHERE e.id=$7",
+        )
+        .bind(id)
+        .bind(input.callsign.trim())
+        .bind(if verified { "active" } else { "pending" })
+        .bind(if verified { "verified" } else { "pending" })
+        .bind(input.authority.trim())
+        .bind(input.authority_reference.trim())
+        .bind(input.event_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO managed_callsign_audit (id,callsign_id,actor_user_id,action,details) VALUES ($1,$2,$3,'registered',$4)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(actor_user_id)
+        .bind(serde_json::json!({
+            "verification_status": if verified { "verified" } else { "pending" }
+        }))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.managed_callsign(id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn managed_callsign(&self, id: Uuid) -> Result<Option<ManagedCallsign>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, String, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, String, DateTime<Utc>, Option<DateTime<Utc>>, String, String)>(
+            "SELECT id,callsign,identity_type,owner_user_id,club_id,event_id,status,effective_from,expires_at,verification_status,authority FROM managed_callsigns WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| row.map(|r| ManagedCallsign {
+            id: r.0, callsign: r.1, identity_type: r.2, owner_user_id: r.3, club_id: r.4,
+            event_id: r.5, status: r.6, effective_from: r.7, expires_at: r.8,
+            verification_status: r.9, authority: r.10,
+        }))
+    }
+
+    pub async fn update_special_callsign_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        verification_status: &str,
+        action: &str,
+        actor_user_id: Uuid,
+    ) -> Result<ManagedCallsign, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query_scalar::<_, Uuid>(
+            "UPDATE managed_callsigns SET status=$2, verification_status=$3, updated_at=now() WHERE id=$1 AND identity_type='special' RETURNING id",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(verification_status)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+        sqlx::query(
+            "INSERT INTO managed_callsign_audit (id,callsign_id,actor_user_id,action,details) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(updated)
+        .bind(actor_user_id)
+        .bind(action)
+        .bind(serde_json::json!({"status": status, "verification_status": verification_status}))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.managed_callsign(id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn event_participants(
+        &self,
+        event_id: Uuid,
+    ) -> Result<Vec<EventParticipant>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, String, String, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, String, Option<String>, Option<String>)>(
+            "SELECT id,event_id,user_id,club_id,callsign_id,operator_callsign,operating_callsign,role,status,starts_at,ends_at,station_label,band,mode FROM event_participants WHERE event_id=$1 ORDER BY operating_callsign,operator_callsign",
+        )
+        .bind(event_id)
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().map(|r| EventParticipant {
+            id: r.0, event_id: r.1, user_id: r.2, club_id: r.3, callsign_id: r.4,
+            operator_callsign: r.5, operating_callsign: r.6, role: r.7, status: r.8,
+            starts_at: r.9, ends_at: r.10, station_label: r.11, band: r.12, mode: r.13,
+        }).collect())
+    }
+
+    pub async fn event_score(&self, event_id: Uuid) -> Result<EventScore, sqlx::Error> {
+        sqlx::query_as::<_, (i64, i64, i64, Value)>(
+            "SELECT COALESCE(SUM(points),0)::bigint, COUNT(*)::bigint, COUNT(*) FILTER (WHERE is_duplicate)::bigint, COALESCE(jsonb_agg(multipliers) FILTER (WHERE multipliers <> '{}'::jsonb), '[]'::jsonb) FROM qso_logs WHERE event_id=$1",
+        )
+        .bind(event_id)
+        .fetch_one(&self.pool)
+        .await
+        .map(|row| EventScore {
+            event_id,
+            total_points: row.0,
+            qso_count: row.1,
+            duplicate_count: row.2,
+            multiplier_values: row.3,
+        })
+    }
+
+    pub async fn create_event_participant(
+        &self,
+        event_id: Uuid,
+        input: &EventParticipantInput,
+    ) -> Result<EventParticipant, sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO event_participants (id,event_id,user_id,club_id,callsign_id,operator_callsign,operating_callsign,role,status,starts_at,ends_at,station_label,band,mode) SELECT $1,$2,$3,e.club_id,$4,$5,c.callsign,$6,$7,$8,$9,$10,$11,$12 FROM events e JOIN managed_callsigns c ON c.id=$4 WHERE e.id=$2",
+        )
+        .bind(id).bind(event_id).bind(input.user_id).bind(input.callsign_id)
+        .bind(input.operator_callsign.trim().to_ascii_uppercase()).bind(input.role.trim())
+        .bind(input.status.trim()).bind(input.starts_at).bind(input.ends_at)
+        .bind(input.station_label.trim()).bind(input.band.as_deref()).bind(input.mode.as_deref())
+        .execute(&self.pool).await?;
+        self.event_participants(event_id)
+            .await?
+            .into_iter()
+            .find(|participant| participant.id == id)
+            .ok_or(sqlx::Error::RowNotFound)
     }
 
     pub async fn create_event(&self, input: &EventInput) -> Result<Event, sqlx::Error> {
         let id = Uuid::new_v4();
-        sqlx::query_as::<_, EventRow>("INSERT INTO events (id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config, 0::bigint AS participant_count")
+        sqlx::query_as::<_, EventRow>("INSERT INTO events (id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_config) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, club_id, name, contest_name, special_callsign, starts_at, ends_at, status, contest_template_id, contest_definition_version, contest_config, 0::bigint AS participant_count")
             .bind(id).bind(input.club_id).bind(input.name.trim()).bind(input.contest_name.trim()).bind(input.special_callsign.as_deref()).bind(input.starts_at).bind(input.ends_at).bind(input.status.as_str()).bind(input.contest_template_id).bind(&input.contest_config)
             .fetch_one(&self.pool).await.map(Event::from)
     }
@@ -1236,7 +1414,7 @@ impl Store {
         event_id: Uuid,
         status: EventStatus,
     ) -> Result<Option<Event>, sqlx::Error> {
-        sqlx::query_as::<_, EventRow>("WITH updated AS (UPDATE events SET status=$2, updated_at=now() WHERE id=$1 RETURNING id,club_id,name,contest_name,special_callsign,starts_at,ends_at,status,contest_template_id,contest_config) SELECT u.id,u.club_id,u.name,u.contest_name,u.special_callsign,u.starts_at,u.ends_at,u.status,u.contest_template_id,u.contest_config,(SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=u.id)::bigint AS participant_count FROM updated u")
+        sqlx::query_as::<_, EventRow>("WITH updated AS (UPDATE events SET status=$2, updated_at=now() WHERE id=$1 RETURNING id,club_id,name,contest_name,special_callsign,starts_at,ends_at,status,contest_template_id,contest_definition_version,contest_config) SELECT u.id,u.club_id,u.name,u.contest_name,u.special_callsign,u.starts_at,u.ends_at,u.status,u.contest_template_id,u.contest_definition_version,u.contest_config,(SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=u.id)::bigint AS participant_count FROM updated u")
             .bind(event_id).bind(status.as_str()).fetch_optional(&self.pool).await.map(|row| row.map(Event::from))
     }
 
@@ -1245,7 +1423,7 @@ impl Store {
         event_id: Uuid,
         input: &EventUpdateInput,
     ) -> Result<Option<Event>, sqlx::Error> {
-        sqlx::query_as::<_, EventRow>("WITH updated AS (UPDATE events SET club_id=$2,name=$3,contest_name=$4,special_callsign=$5,starts_at=$6,ends_at=$7,status=$8,contest_template_id=$9,contest_config=$10,updated_at=now() WHERE id=$1 RETURNING id,club_id,name,contest_name,special_callsign,starts_at,ends_at,status,contest_template_id,contest_config) SELECT u.id,u.club_id,u.name,u.contest_name,u.special_callsign,u.starts_at,u.ends_at,u.status,u.contest_template_id,u.contest_config,(SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=u.id)::bigint AS participant_count FROM updated u")
+        sqlx::query_as::<_, EventRow>("WITH updated AS (UPDATE events SET club_id=$2,name=$3,contest_name=$4,special_callsign=$5,starts_at=$6,ends_at=$7,status=$8,contest_template_id=$9,contest_config=$10,updated_at=now() WHERE id=$1 RETURNING id,club_id,name,contest_name,special_callsign,starts_at,ends_at,status,contest_template_id,contest_definition_version,contest_config) SELECT u.id,u.club_id,u.name,u.contest_name,u.special_callsign,u.starts_at,u.ends_at,u.status,u.contest_template_id,u.contest_definition_version,u.contest_config,(SELECT COUNT(DISTINCT q.user_id) FROM qso_logs q WHERE q.event_id=u.id)::bigint AS participant_count FROM updated u")
             .bind(event_id).bind(input.club_id).bind(input.name.trim()).bind(input.contest_name.trim()).bind(input.special_callsign.as_deref()).bind(input.starts_at).bind(input.ends_at).bind(input.status.as_str()).bind(input.contest_template_id).bind(&input.contest_config).fetch_optional(&self.pool).await.map(|row| row.map(Event::from))
     }
 
@@ -1310,7 +1488,7 @@ impl Store {
         is_administrator: bool,
         limit: i64,
     ) -> Result<Vec<QsoLog>, sqlx::Error> {
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='contest' AND p.scope_id=q.event_id LIMIT 1) contest_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='club' AND p.scope_id=e.club_id LIMIT 1) club_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='overall' AND p.scope_id IS NULL LIMIT 1) overall_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='global' OR (q.event_id IS NOT NULL AND COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='members' AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=e.club_id AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3")
+        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='contest' AND p.scope_id=q.event_id LIMIT 1) contest_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='club' AND p.scope_id=e.club_id LIMIT 1) club_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='overall' AND p.scope_id IS NULL LIMIT 1) overall_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='global' OR (q.event_id IS NOT NULL AND COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='members' AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=e.club_id AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3")
             .bind(is_administrator)
             .bind(viewer_id)
             .bind(limit.clamp(1, 1000))
@@ -1327,7 +1505,7 @@ impl Store {
         // Retries are expected when a native client reconnects. Resolve the
         // existing record before inserting so a successful retry is a normal
         // success response rather than a unique-constraint error.
-        if let Some(existing) = sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
+        if let Some(existing) = sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
             .bind(user_id)
             .bind(input.idempotency_key)
             .fetch_optional(&self.pool)
@@ -1336,13 +1514,13 @@ impl Store {
             return Ok(existing.into());
         }
         let id = Uuid::new_v4();
-        let insert = sqlx::query("INSERT INTO qso_logs (id,user_id,event_id,visibility,visibility_club_id,idempotency_key,callsign,band,mode,frequency_hz,occurred_at,rst_sent,rst_received,exchange,points,source) VALUES ($1,$2,$3,'private',NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (user_id,idempotency_key) DO NOTHING")
-            .bind(id).bind(user_id).bind(input.event_id).bind(input.idempotency_key).bind(input.callsign.trim().to_ascii_uppercase()).bind(input.band.trim()).bind(input.mode.trim().to_ascii_uppercase()).bind(input.frequency_hz).bind(input.occurred_at).bind(input.rst_sent.as_deref()).bind(input.rst_received.as_deref()).bind(&input.exchange).bind(input.points).bind(input.source.trim()).execute(&self.pool).await?;
+        let insert = sqlx::query("INSERT INTO qso_logs (id,user_id,event_id,operating_callsign,callsign_id,visibility,visibility_club_id,idempotency_key,callsign,band,mode,frequency_hz,occurred_at,rst_sent,rst_received,exchange,points,source) VALUES ($1,$2,$3,$4,$5,'private',NULL,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (user_id,idempotency_key) DO NOTHING")
+            .bind(id).bind(user_id).bind(input.event_id).bind(input.operating_callsign.as_deref().map(str::trim).map(str::to_ascii_uppercase)).bind(input.callsign_id).bind(input.idempotency_key).bind(input.callsign.trim().to_ascii_uppercase()).bind(input.band.trim()).bind(input.mode.trim().to_ascii_uppercase()).bind(input.frequency_hz).bind(input.occurred_at).bind(input.rst_sent.as_deref()).bind(input.rst_received.as_deref()).bind(&input.exchange).bind(input.points).bind(input.source.trim()).execute(&self.pool).await?;
         if insert.rows_affected() == 0 {
-            return sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
+            return sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
                 .bind(user_id).bind(input.idempotency_key).fetch_one(&self.pool).await.map(Into::into);
         }
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1")
+        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1")
             .bind(id).fetch_one(&self.pool).await.map(QsoLog::from)
     }
 
@@ -1399,7 +1577,7 @@ impl Store {
     }
 
     pub async fn shared_qso_log(&self, token_hash: &[u8]) -> Result<Option<QsoLog>, sqlx::Error> {
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()")
+        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, u.callsign AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()")
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await

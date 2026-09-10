@@ -9,3 +9,19 @@
 - Added PostgreSQL integration coverage for missing membership, observer and
   lapsed roles, schedule boundaries, cancelled events, completed-event delayed
   uploads, and accepted-log idempotent retries.
+- Added managed callsign identities and explicit event participant/station
+  assignments, with database-enforced operating-identity authorization.
+- Added server-derived base points, duplicate decisions, and scoring
+  explanations for event QSOs.
+- Added event contest-definition snapshots, database configuration validation,
+  stale-definition rejection, and multi-rule exchange multiplier awards.
+- Added event-linked special-call registrations with manager permission checks
+  and administrator verification.
+- Added server-authoritative aggregate event scores to synchronized activity
+  state and the QSONaut contest summary.
+- Included the updated event score in each accepted event-QSO acknowledgment
+  for immediate client refresh.
+- Added append-only audit records for special-call registrations, including the
+  authenticated actor and verification outcome.
+- Added audited special-callsign lifecycle actions for administrator approval or
+  rejection and manager/administrator suspension or revocation.

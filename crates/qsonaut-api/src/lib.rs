@@ -16,11 +16,13 @@ use qsonaut_protocol::{
     ActivityVisibilityInput, ApiError, BootstrapRequest, ChannelMessage, Club, ClubInput,
     ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
     Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
-    DeviceTokenRecord, DiagnosticReport, DiagnosticReportInput, Event, EventInput, EventStatus,
-    EventStatusInput, EventUpdateInput, HealthResponse, MemberClubRole, MemberDetail, MemberInput,
-    MemberUpdateInput, PasswordResetInput, ProfileUpdateInput, QsoLog, QsoLogInput,
-    ServerCapabilities, ServiceInfo, ServiceStatus, SetupStatus, ShareLink, ShareLinkInput,
-    ShareLinkRecord, SharedQsoDetail, StationPresence, StationPresenceInput, UserProfile,
+    DeviceTokenRecord, DiagnosticReport, DiagnosticReportInput, Event, EventInput,
+    EventParticipant, EventParticipantInput, EventScore, EventStatus, EventStatusInput,
+    EventUpdateInput, HealthResponse, ManagedCallsign, ManagedCallsignInput,
+    ManagedCallsignStatusInput, MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput,
+    PasswordResetInput, ProfileUpdateInput, QsoLog, QsoLogInput, ServerCapabilities, ServiceInfo,
+    ServiceStatus, SetupStatus, ShareLink, ShareLinkInput, ShareLinkRecord, SharedQsoDetail,
+    StationPresence, StationPresenceInput, UserProfile,
 };
 use qsonaut_store::Store;
 use utoipa::OpenApi;
@@ -36,8 +38,9 @@ use utoipa::OpenApi;
         management::club_members, management::set_club_member, management::remove_club_member,
         management::clubs, management::create_club, management::update_club,
         management::request_club_join, management::club_join_requests, management::review_club_join_request,
-        management::contest_templates,
+        management::contest_templates, management::identities, management::register_special_callsign, management::update_special_callsign_status,
         management::events, management::create_event, management::update_event, management::set_event_status,
+        management::event_participants, management::create_event_participant, management::event_score,
         management::stations, management::publish_station_presence, management::channel_messages,
         management::logs, management::collect_log, management::diagnostics, management::export_diagnostics, management::purge_retained_artifacts, management::activity_summary, management::activity_visibility, management::set_activity_visibility,
         management::create_log_share, management::shared_log, management::revoke_log_share, management::log_shares
@@ -51,6 +54,7 @@ use utoipa::OpenApi;
         MemberUpdateInput, PasswordResetInput, ProfileUpdateInput, UserProfile, ActivitySummary, ActivityVisibility, ActivityVisibilityInput, MemberClubRole, MemberDetail, ShareLinkInput, ShareLinkRecord,
         ShareLink, SharedQsoDetail,
         Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventUpdateInput, EventStatusInput, ChannelMessage,
+        ManagedCallsign, ManagedCallsignInput, ManagedCallsignStatusInput, EventParticipant, EventParticipantInput, EventScore,
         StationPresence, StationPresenceInput, QsoLog, QsoLogInput, DiagnosticReport, DiagnosticReportInput
     )),
     tags(
@@ -249,6 +253,14 @@ pub fn router_with_store_and_policy(
         )
         .route("/api/v1/events/{event_id}", patch(management::update_event))
         .route(
+            "/api/v1/events/{event_id}/participants",
+            get(management::event_participants).post(management::create_event_participant),
+        )
+        .route(
+            "/api/v1/events/{event_id}/score",
+            get(management::event_score),
+        )
+        .route(
             "/api/v1/clubs/{club_id}/join-requests",
             get(management::club_join_requests).post(management::request_club_join),
         )
@@ -259,6 +271,15 @@ pub fn router_with_store_and_policy(
         .route(
             "/api/v1/contest-templates",
             get(management::contest_templates),
+        )
+        .route("/api/v1/identities", get(management::identities))
+        .route(
+            "/api/v1/identities/special",
+            post(management::register_special_callsign),
+        )
+        .route(
+            "/api/v1/identities/{identity_id}/status",
+            patch(management::update_special_callsign_status),
         )
         .route("/api/v1/stations", get(management::stations))
         .route(

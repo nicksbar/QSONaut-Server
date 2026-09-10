@@ -26,6 +26,20 @@ the public read endpoint does not expose the underlying log ID. The copied
 path opens a human-readable share page; `/api/v1/share/{token}` remains
 available for JSON consumers.
 
+Event QSO submissions must include the selected `operating_callsign` and
+`callsign_id`. Missing or unassigned identities are rejected by the database
+boundary; older clients cannot bypass event authorization by omitting them.
+`GET /api/v1/identities` returns the caller's usable personal, club, and
+event-linked special identities. Special identities are registered through
+`POST /api/v1/identities/special`; administrators can approve or reject them,
+and authorized club managers can suspend or revoke them. These lifecycle
+actions are recorded with the authenticated actor.
+
+For an authorized event, `GET /api/v1/events/{event_id}/score` and the event
+snapshot expose the server aggregate. Accepted event-QSO acknowledgments also
+carry the refreshed score and the QSO's authoritative duplicate, multiplier,
+points, and scoring-explanation fields.
+
 ## Device authentication
 
 Signed-in operators can open **Station link** in the management UI, name the

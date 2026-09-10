@@ -560,6 +560,19 @@ fn schedule_value(schedule: Schedule) -> Value {
     }
 }
 
+fn multiplier_rules(definition: &Definition) -> Value {
+    let mut rules = Vec::new();
+    if definition.exchange.contains(&"section") {
+        rules.push(json!({
+            "type": "section",
+            "perBand": false,
+            "perMode": false,
+            "description": "Sections worked"
+        }));
+    }
+    json!(rules)
+}
+
 #[must_use]
 /// Builds every server-owned contest template.
 ///
@@ -584,6 +597,7 @@ pub fn builtin_templates() -> Vec<ContestTemplate> {
                 "pointsPerQso": definition.points_per_qso,
                 "formula": definition.formula,
                 "multiplier": definition.multiplier,
+                "multipliers": multiplier_rules(definition),
             }),
             required_fields: required_fields(definition.setup_fields),
             validation_rules: json!({

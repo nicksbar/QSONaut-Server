@@ -126,38 +126,7 @@ async fn handle_message(
         ClientMessage::Sync => {
             require_scope(scopes, "events:read")?;
             require_scope(scopes, "messages:read")?;
-            let mut events = state
-                .store
-                .events()
-                .await
-                .map_err(|error| internal_error(&error))?;
-            let contest_templates = state
-                .store
-                .contest_templates()
-                .await
-                .map_err(|error| internal_error(&error))?;
-            let channel_messages = state
-                .store
-                .channel_messages(200)
-                .await
-                .map_err(|error| internal_error(&error))?;
-            let mut clubs = state
-                .store
-                .clubs(user.id, false)
-                .await
-                .map_err(|error| internal_error(&error))?;
-            clubs.retain(|club| club.my_role.is_some());
-            let club_ids = clubs
-                .iter()
-                .map(|club| club.id)
-                .collect::<std::collections::HashSet<_>>();
-            events.retain(|event| club_ids.contains(&event.club_id));
-            Ok(ServerMessage::Snapshot {
-                events,
-                contest_templates,
-                channel_messages,
-                clubs,
-            })
+            sync_snapshot(state, user).await
         }
         ClientMessage::Presence(input) => {
             require_scope(scopes, "presence:write")?;
@@ -172,12 +141,25 @@ async fn handle_message(
         ClientMessage::Log(input) => {
             require_scope(scopes, "logs:write")?;
             validate_log(&input)?;
-            state
+            let qso = state
                 .store
                 .create_qso_log(user.id, &input)
                 .await
-                .map(ServerMessage::LogAccepted)
-                .map_err(|error| log_submission_error(&error))
+                .map_err(|error| log_submission_error(&error))?;
+            let event_score = match qso.event_id {
+                Some(event_id) => Some(
+                    state
+                        .store
+                        .event_score(event_id)
+                        .await
+                        .map_err(|error| internal_error(&error))?,
+                ),
+                None => None,
+            };
+            Ok(ServerMessage::LogAccepted {
+                qso: Box::new(qso),
+                event_score,
+            })
         }
         ClientMessage::Diagnostic(input) => {
             require_scope(scopes, "diagnostics:write")?;
@@ -210,6 +192,71 @@ async fn handle_message(
         }
         ClientMessage::Ping => Ok(ServerMessage::Pong),
     }
+}
+
+async fn sync_snapshot(state: &AppState, user: &CurrentUser) -> Result<ServerMessage, String> {
+    let mut events = state
+        .store
+        .events()
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let contest_templates = state
+        .store
+        .contest_templates()
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let channel_messages = state
+        .store
+        .channel_messages(200)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let identities = state
+        .store
+        .managed_callsigns_for_user(user.id)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let mut participants = Vec::new();
+    for event in &events {
+        participants.extend(
+            state
+                .store
+                .event_participants(event.id)
+                .await
+                .map_err(|error| internal_error(&error))?
+                .into_iter()
+                .filter(|participant| participant.user_id == user.id),
+        );
+    }
+    let mut clubs = state
+        .store
+        .clubs(user.id, false)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    clubs.retain(|club| club.my_role.is_some());
+    let club_ids = clubs
+        .iter()
+        .map(|club| club.id)
+        .collect::<std::collections::HashSet<_>>();
+    events.retain(|event| club_ids.contains(&event.club_id));
+    let mut event_scores = Vec::with_capacity(events.len());
+    for event in &events {
+        event_scores.push(
+            state
+                .store
+                .event_score(event.id)
+                .await
+                .map_err(|error| internal_error(&error))?,
+        );
+    }
+    Ok(ServerMessage::Snapshot {
+        events,
+        contest_templates,
+        event_scores,
+        identities,
+        participants,
+        channel_messages,
+        clubs,
+    })
 }
 
 fn has_scope(scopes: &[String], required: &str) -> bool {
@@ -377,6 +424,8 @@ mod tests {
     fn log_validation_rejects_malformed_records_but_ignores_legacy_visibility() {
         let mut input = QsoLogInput {
             event_id: None,
+            operating_callsign: None,
+            callsign_id: None,
             visibility: "global".to_owned(),
             visibility_club_id: None,
             idempotency_key: uuid::Uuid::new_v4(),
