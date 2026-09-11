@@ -1088,8 +1088,8 @@ impl Store {
     }
 
     pub async fn clubs(&self, viewer_id: Uuid, is_admin: bool) -> Result<Vec<Club>, sqlx::Error> {
-        sqlx::query_as::<_, (Uuid, String, Option<String>, String, i64, i64, Option<String>, Option<String>, bool)>(
-            "SELECT c.id,c.name,c.callsign,c.description,count(cm.user_id),count(cm.user_id) FILTER (WHERE cm.membership_status='active' AND (cm.dues_status IN ('due','overdue') OR cm.renewal_due_on <= current_date + 30)),mine.role,(SELECT status FROM club_join_requests r WHERE r.club_id=c.id AND r.user_id=$1 ORDER BY requested_at DESC LIMIT 1),($2 OR mine.role IN ('owner','coordinator')) FROM clubs c LEFT JOIN club_members cm ON cm.club_id=c.id LEFT JOIN club_members mine ON mine.club_id=c.id AND mine.user_id=$1 GROUP BY c.id,mine.role ORDER BY c.name",
+        sqlx::query_as::<_, (Uuid, String, Option<String>, String, i64, i64, Option<String>, Option<String>, Option<String>, bool)>(
+            "SELECT c.id,c.name,c.callsign,c.description,count(cm.user_id),count(cm.user_id) FILTER (WHERE cm.membership_status='active' AND (cm.dues_status IN ('due','overdue') OR cm.renewal_due_on <= current_date + 30)),mine.role,mine.membership_status,(SELECT status FROM club_join_requests r WHERE r.club_id=c.id AND r.user_id=$1 ORDER BY requested_at DESC LIMIT 1),($2 OR (mine.role IN ('owner','coordinator') AND mine.membership_status='active')) FROM clubs c LEFT JOIN club_members cm ON cm.club_id=c.id LEFT JOIN club_members mine ON mine.club_id=c.id AND mine.user_id=$1 GROUP BY c.id,mine.role,mine.membership_status ORDER BY c.name",
         )
         .bind(viewer_id)
         .bind(is_admin)
@@ -1105,8 +1105,9 @@ impl Store {
                     member_count: r.4,
                     renewal_attention_count: r.5,
                     my_role: r.6,
-                    join_request_status: r.7,
-                    can_manage: r.8,
+                    my_membership_status: r.7,
+                    join_request_status: r.8,
+                    can_manage: r.9,
                 })
                 .collect()
         })
@@ -1158,6 +1159,7 @@ impl Store {
             member_count: 1,
             renewal_attention_count: 0,
             my_role: Some("owner".to_owned()),
+            my_membership_status: Some("active".to_owned()),
             join_request_status: None,
             can_manage: true,
         }))
@@ -1608,6 +1610,21 @@ impl Store {
         sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String, String, Value, DateTime<Utc>)>(
             "SELECT d.id,d.user_id,u.callsign,d.instance_id,d.category,d.summary,d.payload,d.created_at FROM diagnostic_reports d JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC LIMIT $1",
         )
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().map(|row| DiagnosticReport { id: row.0, user_id: row.1, operator_callsign: row.2, instance_id: row.3, category: row.4, summary: row.5, payload: row.6, created_at: row.7 }).collect())
+    }
+
+    pub async fn diagnostic_reports_for_user(
+        &self,
+        user_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<DiagnosticReport>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String, String, Value, DateTime<Utc>)>(
+            "SELECT d.id,d.user_id,u.callsign,d.instance_id,d.category,d.summary,d.payload,d.created_at FROM diagnostic_reports d JOIN users u ON u.id=d.user_id WHERE d.user_id=$1 ORDER BY d.created_at DESC LIMIT $2",
+        )
+        .bind(user_id)
         .bind(limit.clamp(1, 1000))
         .fetch_all(&self.pool)
         .await

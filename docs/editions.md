@@ -26,6 +26,11 @@ hosted CAPTCHA, or provider credentials. Those remain optional extensions so a
 local or field deployment stays fully usable offline and without a hosted
 commercial dependency.
 
+The ownership and visibility model is documented in
+[ownership boundaries](ownership-boundaries.md): normal operator workspaces
+are scoped to active club memberships; organization work owns contests and
+rosters; server-wide repair is administrator-only.
+
 The public repository contains no governance API, persistence types, or UI for
 board management, officer assignments, elections, or voting cycles. Historical
 migrations are immutable database history; new hosted deployments apply the

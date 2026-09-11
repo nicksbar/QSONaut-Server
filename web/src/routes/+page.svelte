@@ -5,14 +5,16 @@
   import ActivityVisibilityPanel from '$lib/ActivityVisibilityPanel.svelte';
   import ClubsPanel from '$lib/ClubsPanel.svelte';
   import EventsPanel from '$lib/EventsPanel.svelte';
+  import IdentityPanel from '$lib/IdentityPanel.svelte';
   import MembersPanel from '$lib/MembersPanel.svelte';
+  import MyStationsPanel from '$lib/MyStationsPanel.svelte';
   import StationLinkPanel from '$lib/StationLinkPanel.svelte';
   import SiteFooter from '$lib/SiteFooter.svelte';
   import { ApiError, api } from '$lib/api';
-  import type { AccessCallsignLookup, AccessChallenge, AccessRequest, ChannelMessage, Club, ContestTemplate, DiagnosticReport, Event, QsoLog, ServerCapabilities, Station, User, UserProfile } from '$lib/types';
+  import type { AccessCallsignLookup, AccessChallenge, AccessRequest, ChannelMessage, Club, ContestTemplate, DiagnosticReport, Event, ManagedCallsign, QsoLog, ServerCapabilities, Station, User, UserProfile } from '$lib/types';
 
   type Phase = 'loading' | 'setup' | 'login' | 'ready' | 'error';
-  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'activity' | 'station' | 'profile';
+  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'identities' | 'activity' | 'station' | 'profile' | 'admin' | 'admin-operations' | 'admin-identities' | 'server-data';
 
   let phase = $state<Phase>('loading');
   let tab = $state<Tab>('overview');
@@ -33,6 +35,8 @@
   let accessRequests = $state<AccessRequest[]>([]);
   let events = $state<Event[]>([]);
   let templates = $state<ContestTemplate[]>([]);
+  let identities = $state<ManagedCallsign[]>([]);
+  let clubScopeId = $state<string | null>(null);
   let stations = $state<Station[]>([]);
   let logs = $state<QsoLog[]>([]);
   let messages = $state<ChannelMessage[]>([]);
@@ -52,6 +56,12 @@
   const qsonautDesktopUrl = 'https://github.com/nicksbar/QSONaut';
   const qsonautServerUrl = 'https://github.com/nicksbar/QSONaut-Server';
   let canManageEvents = $derived(user?.global_role === 'administrator' || clubs.some((club) => club.can_manage));
+  let activeMemberships = $derived(clubs.filter((club) => club.my_membership_status === 'active'));
+  let workspaceEvents = $derived(events.filter((event) => activeMemberships.some((club) => club.id === event.club_id)));
+  let workspaceIdentities = $derived(identities.filter((identity) => identity.owner_user_id === user?.id || activeMemberships.some((club) => club.id === identity.club_id)));
+  let scopedEvents = $derived(clubScopeId ? workspaceEvents.filter((event) => event.club_id === clubScopeId) : workspaceEvents);
+  let scopedClub = $derived(clubs.find((club) => club.id === clubScopeId));
+  let myLogs = $derived(logs.filter((log) => log.user_id === user?.id));
 
   async function refreshActivity() {
     if (activityRefreshInFlight || !user) return;
@@ -65,16 +75,21 @@
           api<DiagnosticReport[]>('/api/v1/diagnostics'),
         ]);
       }
+      else {
+        [stations, diagnostics] = await Promise.all([api<Station[]>('/api/v1/stations'), api<DiagnosticReport[]>('/api/v1/diagnostics')]);
+        messages = [];
+      }
     } finally {
       activityRefreshInFlight = false;
     }
   }
 
   async function load() {
-    [clubs, events, templates, capabilities] = await Promise.all([
+    [clubs, events, templates, identities, capabilities] = await Promise.all([
       api<Club[]>('/api/v1/clubs'),
       api<Event[]>('/api/v1/events'),
       api<ContestTemplate[]>('/api/v1/contest-templates'),
+      api<ManagedCallsign[]>('/api/v1/identities'),
       api<ServerCapabilities>('/api/v1/capabilities'),
     ]);
     if (user?.global_role === 'administrator') {
@@ -84,7 +99,7 @@
       ]);
       await refreshActivity();
     } else {
-      members = []; accessRequests = []; stations = []; messages = []; diagnostics = [];
+      members = []; accessRequests = []; stations = []; messages = [];
       await refreshActivity();
     }
   }
@@ -164,8 +179,15 @@
 
   function openTab(next: Tab) {
     tab = next;
+    if (next !== 'events') clubScopeId = null;
     operatorMenuOpen = false;
     if (next === 'profile' && user) void loadProfile().catch((cause) => { profileNotice = (cause as Error).message; });
+  }
+
+  function openClubOperations(club: Club) {
+    clubScopeId = club.id;
+    tab = 'events';
+    operatorMenuOpen = false;
   }
 
   function profileInput() {
@@ -280,55 +302,84 @@
     <SiteFooter />
   </div>
 {:else}
-  <div class="shell">
-    <header class="site-header"><a class="site-brand" href="https://qsonaut.com" aria-label="QSONaut home"><img src="/qsonaut-icon.png" alt="" /><span><strong>QSONaut</strong><small>AMATEUR RADIO MISSION CONTROL</small></span></a><div class="site-header-right"><nav class="site-links"><a href={qsonautDesktopUrl} target="_blank" rel="noreferrer">PROJECT</a><a href={qsonautServerUrl} target="_blank" rel="noreferrer">SERVER</a><a href="https://qsonaut.com" target="_blank" rel="noreferrer">QSONAUT.COM</a></nav><div class="operator"><i></i><div class="operator-menu-wrap"><button class="operator-trigger" aria-expanded={operatorMenuOpen} onclick={() => operatorMenuOpen = !operatorMenuOpen}><b>{user?.callsign}</b><span>⌄</span></button>{#if operatorMenuOpen}<div class="operator-menu"><button onclick={() => openTab('profile')}>PROFILE</button><button onclick={() => openTab('activity')}>MY LOGS / SHARING</button><button onclick={() => openTab('station')}>STATION LINK</button><button onclick={logout}>SIGN OUT</button></div>{/if}</div></div></div></header>
-    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity','station'] : canManageEvents ? ['overview','clubs','events','activity','station'] : ['overview','clubs','activity','station']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item === 'station' ? 'station link' : item === 'activity' ? 'my activity' : item}</button>{/each}</nav>
-    {#if error}<p class="error banner">{error}</p>{/if}
-    <main>
+  <div class="console-shell">
+    <aside class="console-sidebar">
+      <a class="console-brand" href="https://qsonaut.com" aria-label="QSONaut home"><img src="/qsonaut-icon.png" alt="" /><span><strong>QSONaut</strong><small>OPERATIONS CONSOLE</small></span></a>
+      <div class="console-edition"><span>DEPLOYMENT</span><b>{capabilities.edition}</b></div>
+      <nav class="console-nav" aria-label="Management console">
+        <p>MY WORKSPACE</p>
+        <button class:active={tab === 'overview'} onclick={() => openTab('overview')}><span>◫</span> Home</button>
+        <button class:active={tab === 'events' && !clubScopeId} onclick={() => openTab('events')}><span>◌</span> My operations</button>
+        <button class:active={tab === 'identities'} onclick={() => openTab('identities')}><span>⌁</span> My identities</button>
+        <p>MY ORGANIZATIONS</p>
+        {#each activeMemberships as club}<button class:active={tab === 'events' && clubScopeId === club.id} class="club-nav-item" onclick={() => openClubOperations(club)}><span>◉</span><span>{club.name}<small>{club.my_role}</small></span></button>{/each}
+        <button class:active={tab === 'clubs'} onclick={() => openTab('clubs')}><span>＋</span> Find / request</button>
+        <p>MY STATION &amp; DATA</p>
+        <button class:active={tab === 'activity'} onclick={() => openTab('activity')}><span>≋</span> Sharing center</button>
+        <button class:active={tab === 'station'} onclick={() => openTab('station')}><span>⌘</span> My Stations</button>
+        {#if user?.global_role === 'administrator'}<p>ADMINISTRATION</p><button class:active={tab === 'admin'} onclick={() => openTab('admin')}><span>♙</span> Accounts &amp; access</button><button class:active={tab === 'admin-operations'} onclick={() => openTab('admin-operations')}><span>◌</span> Organization repair</button><button class:active={tab === 'admin-identities'} onclick={() => openTab('admin-identities')}><span>⌁</span> Identity review</button><p>SERVER DATA</p><button class:active={tab === 'server-data'} onclick={() => openTab('server-data')}><span>⌁</span> Hardware validation</button>{/if}
+      </nav>
+      <div class="sidebar-foot"><a href={qsonautDesktopUrl} target="_blank" rel="noreferrer">Desktop app ↗</a><a href={qsonautServerUrl} target="_blank" rel="noreferrer">Server docs ↗</a></div>
+    </aside>
+    <div class="console-content">
+      <header class="console-header"><div><p class="eyebrow">QSONAUT SERVER</p><b>{tab === 'events' ? scopedClub ? scopedClub.name + ' operations' : 'My operations' : tab === 'clubs' ? 'Find organizations' : tab === 'identities' ? 'My operating identities' : tab === 'activity' ? 'My activity and station data' : tab === 'admin' ? 'Global administration' : tab === 'server-data' ? 'Server logs and hardware validation' : tab === 'station' ? 'Desktop connection' : 'My workspace'}</b></div><div class="site-header-right"><div class="operator"><i></i><div class="operator-menu-wrap"><button class="operator-trigger" aria-expanded={operatorMenuOpen} onclick={() => operatorMenuOpen = !operatorMenuOpen}><b>{user?.callsign}</b><span>⌄</span></button>{#if operatorMenuOpen}<div class="operator-menu"><button onclick={() => openTab('profile')}>PROFILE &amp; SECURITY</button><button onclick={() => openTab('clubs')}>FIND / REQUEST ORGANIZATION</button><button onclick={() => openTab('activity')}>MY LOGS / SHARING</button><button onclick={() => openTab('station')}>STATION LINK</button><button onclick={logout}>SIGN OUT</button></div>{/if}</div></div></div></header>
+      <nav class="compact-nav" aria-label="Compact management navigation"><button class:active={tab === 'overview'} onclick={() => openTab('overview')}>Home</button><button class:active={tab === 'clubs'} onclick={() => openTab('clubs')}>Find clubs</button><button class:active={tab === 'events'} onclick={() => openTab('events')}>Operations</button><button class:active={tab === 'identities'} onclick={() => openTab('identities')}>Identities</button><button class:active={tab === 'activity'} onclick={() => openTab('activity')}>Activity</button>{#if user?.global_role === 'administrator'}<button class:active={tab === 'admin'} onclick={() => openTab('admin')}>Admin</button><button class:active={tab === 'server-data'} onclick={() => openTab('server-data')}>Server data</button>{/if}</nav>
+      {#if error}<p class="error banner">{error}</p>{/if}
+      <main class="console-main">
       {#if tab === 'overview'}
-        <p class="eyebrow amber">CONTROL PLANE / ONLINE</p>
-        <h2 class="hero">{events.filter((event) => event.status === 'active').length} active operations</h2>
-        <div class="metrics"><article><b>{clubs.length}</b>CLUBS</article><article><b>{clubs.filter((club) => club.my_role).length}</b>MY CLUBS</article><article><b>{clubs.filter((club) => club.can_manage).reduce((sum, club) => sum + club.renewal_attention_count, 0)}</b>RENEWALS DUE</article><article><b>{events.filter((event) => event.status === 'scheduled').length}</b>UPCOMING</article></div>
-        <ActivitySummaryPanel {clubs} {events} /><ActivityVisibilityPanel {clubs} {events} />
-        <div class="boundary"><b>One home for group operations.</b><p>Configure contests, coordinate operators, follow station activity, collect logs, and build club reports.</p></div>
+        <section class="overview-workspace">
+          <div class="overview-intro"><div><p class="eyebrow amber">MY OPERATING WORKSPACE</p><h1>Operate with your organizations.</h1><p>Your home shows only the clubs you actively belong to and the operations they run. Server-wide data is reserved for administrators in Server oversight.</p></div><div class="overview-actions"><button onclick={() => openTab('events')}>MY OPERATIONS</button><button class="secondary" onclick={() => openTab('station')}>CONNECT A STATION</button></div></div>
+          <div class="metrics"><button onclick={() => openTab('events')}><b>{workspaceEvents.filter((event) => event.status === 'active').length}</b><span>ACTIVE OPERATIONS</span><small>Across your organizations</small></button><button onclick={() => openTab('clubs')}><b>{activeMemberships.length}</b><span>MY ORGANIZATIONS</span><small>Active memberships</small></button><button onclick={() => openTab('clubs')}><b>{activeMemberships.filter((club) => club.can_manage).reduce((sum, club) => sum + club.renewal_attention_count, 0)}</b><span>RENEWALS DUE</span><small>In organizations you manage</small></button><button onclick={() => openTab('events')}><b>{workspaceEvents.filter((event) => event.status === 'scheduled').length}</b><span>UPCOMING</span><small>Your scheduled windows</small></button></div>
+          <div class="overview-grid"><section class="command-card"><p class="eyebrow">NEXT ACTIONS</p><h2>My operations queue</h2>{#if workspaceEvents.filter((event) => event.status === 'scheduled').length}<button class="queue-item" onclick={() => openTab('events')}><span>◌</span><div><b>{workspaceEvents.filter((event) => event.status === 'scheduled').length} scheduled operation{workspaceEvents.filter((event) => event.status === 'scheduled').length === 1 ? '' : 's'}</b><small>Review lineups, callsigns, and rules before activation.</small></div><em>Open →</em></button>{/if}{#if activeMemberships.some((club) => club.can_manage && club.renewal_attention_count)}<button class="queue-item" onclick={() => openTab('clubs')}><span>◎</span><div><b>Membership records need attention</b><small>Review renewal and dues status in your organization workspace.</small></div><em>Open →</em></button>{/if}{#if !workspaceEvents.filter((event) => event.status === 'scheduled').length && !activeMemberships.some((club) => club.can_manage && club.renewal_attention_count)}<p class="empty">Nothing needs immediate action. Use an organization in the sidebar to plan its next activity.</p>{/if}</section><section class="command-card identity-summary"><p class="eyebrow">OPERATING AUTHORITY</p><h2>My identity readiness</h2><b>{workspaceIdentities.filter((identity) => identity.status === 'active' && identity.verification_status === 'verified').length} ready callsigns</b><p>{workspaceIdentities.filter((identity) => identity.verification_status === 'pending').length} identity request{workspaceIdentities.filter((identity) => identity.verification_status === 'pending').length === 1 ? '' : 's'} awaiting verification.</p><button class="secondary" onclick={() => openTab('identities')}>OPEN MY IDENTITIES</button></section></div>
+          <ActivitySummaryPanel clubs={activeMemberships} events={workspaceEvents} />
+          <MyStationsPanel stations={stations} compact={true} />
+        </section>
         {#if capabilities.edition !== 'community'}
           <div class="boundary hosted-boundary"><b>HOSTED EXTENSIONS · {capabilities.edition.toUpperCase()}</b><p>{capabilities.features.length} hosted capabilities are active.</p><div class="feature-list">{#each capabilities.features as feature}<span class="pill">{feature}</span>{/each}</div></div>
         {/if}
       {:else if tab === 'profile'}
-        <section class="profile-panel"><p class="eyebrow amber">OPERATOR / IDENTITY</p><h2>{user?.callsign}</h2><p class="lede">Your operator identity powers individual activity, club participation, and contest reporting. License and address details stay in your private profile unless a future sharing surface explicitly says otherwise.</p><ActivitySummaryPanel {clubs} {events} />
+        <section class="profile-panel"><p class="eyebrow amber">OPERATOR / IDENTITY</p><h2>{user?.callsign}</h2><p class="lede">Your operator identity powers individual activity, club participation, and contest reporting. License and address details stay in your private profile unless a future sharing surface explicitly says otherwise.</p><ActivitySummaryPanel clubs={activeMemberships} events={workspaceEvents} />
           {#if profile}<form class="profile-form" onsubmit={(event) => { event.preventDefault(); void saveProfile(); }}><div class="profile-section"><div><p class="eyebrow cyan">IDENTITY</p><h3>Operator profile</h3></div><button type="button" class="secondary" onclick={refreshHamdb} disabled={profileBusy}>↻ REFRESH FROM HAMDB</button><label>Callsign<input value={profile.user.callsign} readonly /></label><label>Display name<input maxlength="100" bind:value={profileName} required /></label><label>First name<input maxlength="80" bind:value={profile.first_name} /></label><label>Middle name<input maxlength="80" bind:value={profile.middle_name} /></label><label>Surname<input maxlength="120" bind:value={profile.surname} /></label><label>Suffix<input maxlength="40" bind:value={profile.suffix} /></label><label>Grid locator<input maxlength="16" bind:value={profile.grid} placeholder="e.g. CN87" /></label><label>QTH / station location<input maxlength="160" bind:value={profile.qth} placeholder="City, region" /></label></div><div class="profile-section"><div><p class="eyebrow cyan">LICENSE RECORD</p><h3>License details</h3></div><label>Class<input maxlength="40" bind:value={profile.license_class} /></label><label>Status<input maxlength="40" bind:value={profile.license_status} /></label><label>Expiration<input type="date" bind:value={profile.license_expires_on} /></label><label>Country<input maxlength="80" bind:value={profile.country} /></label><label>Latitude<input maxlength="32" bind:value={profile.latitude} /></label><label>Longitude<input maxlength="32" bind:value={profile.longitude} /></label></div><div class="profile-section address-section"><div><p class="eyebrow cyan">PRIVATE CONTACT</p><h3>Mailing address</h3><p class="form-help">Used for your account record and future club workflows. It is not included in activity summaries or copy links.</p></div><label>Address line 1<input maxlength="160" bind:value={profile.address_line_1} /></label><label>Address line 2<input maxlength="160" bind:value={profile.address_line_2} /></label><label>State / region<input maxlength="80" bind:value={profile.state} /></label><label>Postal code<input maxlength="32" bind:value={profile.postal_code} /></label></div><button disabled={profileBusy}>{profileBusy ? 'WORKING…' : 'SAVE OPERATOR PROFILE'}</button></form>{:else}<p class="notice">Loading operator profile…</p>{/if}
           {#if profile?.hamdb_last_error}<p class="error">HamDB: {profile.hamdb_last_error}</p>{/if}<form class="compact" onsubmit={(event) => { event.preventDefault(); void savePassword(); }}><h3>Change password</h3><label>New password<input type="password" minlength="12" maxlength="256" bind:value={newPassword} required /></label><button class="danger" disabled={profileBusy}>CHANGE PASSWORD</button></form>{#if profileNotice}<p class="notice">{profileNotice}</p>{/if}<div class="profile-grid"><div><small>GLOBAL ACCESS</small><b>{user?.global_role}</b></div><div><small>HAMDB SYNC</small><b>{profile?.hamdb_fetched_at ? new Date(profile.hamdb_fetched_at).toLocaleString() : 'not synced'}</b></div><div><small>ACTIVITY DATA</small><b>summarized overall, by club, or by contest</b></div></div></section>
       {:else if tab === 'clubs'}<ClubsPanel {clubs} {capabilities} currentUser={user} refresh={load} />
-      {:else if tab === 'members'}<MembersPanel {members} {clubs} {accessRequests} refresh={load} />
-      {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} administrator={user?.global_role === 'administrator'} refresh={load} />
-      {:else if tab === 'activity'}<ActivitySummaryPanel {clubs} {events} /><ActivityVisibilityPanel {clubs} {events} /><ActivityPanel administrator={user?.global_role === 'administrator'} {capabilities} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} />
-      {:else}<StationLinkPanel currentUser={user} />{/if}
+      {:else if tab === 'events'}<EventsPanel events={scopedEvents} clubs={activeMemberships} {templates} administrator={user?.global_role === 'administrator'} refresh={load} />
+      {:else if tab === 'identities'}<IdentityPanel identities={workspaceIdentities} clubs={activeMemberships} events={workspaceEvents} />
+      {:else if tab === 'activity'}<section class="sharing-workspace"><div class="admin-intro"><p class="eyebrow amber">MY DATA / SHARING</p><h1>Sharing center</h1><p>Control what activity you share and review the QSO and hardware-validation submissions you have sent to this server.</p></div><ActivityVisibilityPanel clubs={activeMemberships} events={workspaceEvents} /><ActivityPanel administrator={false} {capabilities} {stations} logs={myLogs} {messages} {diagnostics} refresh={refreshActivity} /></section>
+      {:else if tab === 'admin' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / ACCOUNTS</p><h1>Accounts &amp; access</h1><p>Review access requests, operator accounts, and account recovery. Organization repair and identity review are separate administrator workspaces.</p></div><MembersPanel {members} {clubs} {accessRequests} refresh={load} /></section>
+      {:else if tab === 'admin-operations' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / ORGANIZATIONS</p><h1>Organization repair</h1><p>Resolve cross-organization operation, contest, roster, and assignment issues without mixing them with account or identity administration.</p></div><EventsPanel {events} {clubs} {templates} administrator={true} refresh={load} /></section>
+      {:else if tab === 'admin-identities' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / IDENTITIES</p><h1>Identity review</h1><p>Review global callsign records and their organization or event authority separately from operator accounts and contest operations.</p></div><IdentityPanel {identities} {clubs} {events} /></section>
+      {:else if tab === 'server-data' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">SERVER DATA / ADMINISTRATOR ONLY</p><h1>Hardware validation</h1><p>Review opt-in hardware validation snapshots alongside their connected-station context. Submitted QSO logs and automation traffic are retained separately and are not part of this validation workspace.</p></div><ActivityPanel administrator={true} {capabilities} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} showLogs={false} showMessages={false} /></section>
+      {:else}<MyStationsPanel {stations} /><StationLinkPanel currentUser={user} />{/if}
     </main>
-    <SiteFooter />
+    </div>
   </div>
+  <SiteFooter />
 {/if}
 
 <style>
   .public-page { min-height:100vh; width:min(1280px,calc(100% - 40px)); margin:auto; display:flex; flex-direction:column; }
   .public-page .center { flex:1; min-height:auto; padding:48px 0; }
-  .auth-brand, .site-brand { display:flex; align-items:center; gap:12px; color:inherit; text-decoration:none; }
+  .auth-brand { display:flex; align-items:center; gap:12px; color:inherit; text-decoration:none; }
   .auth-brand { margin-bottom:28px; }
   .auth-brand img { width:58px; height:58px; object-fit:contain; }
-  .auth-brand strong, .site-brand strong { display:block; color:var(--cyan); font-size:clamp(24px,4vw,38px); font-weight:400; letter-spacing:-.04em; }
-  .auth-brand small, .site-brand small { display:block; margin-top:3px; color:#ef826e; font:600 9px ui-monospace; letter-spacing:.06em; }
-  .site-header { gap:24px; padding:18px 0; }
-  .site-brand img { width:56px; height:56px; object-fit:contain; }
-  .site-header-right { display:flex; align-items:center; gap:22px; }
-  .site-links { display:flex; align-items:center; gap:4px; border:0; overflow:visible; }
-  .site-links a { padding:8px 10px; color:var(--muted); font:600 10px ui-monospace; letter-spacing:.08em; text-decoration:none; }
-  .site-links a:hover { color:var(--cyan); }
-  .site-header .operator { white-space:nowrap; }
-  .operator-menu-wrap { position: relative; }
-  .operator-trigger { display: flex; align-items: center; gap: 7px; padding: 8px !important; color: #dce9eb !important; }
-  .operator-trigger span { color: var(--cyan); }
-  .operator-menu { position: absolute; right: 0; top: 100%; z-index: 5; min-width: 190px; border: 1px solid var(--line); background: #07161cf5; box-shadow: 0 12px 30px #0008; }
-  .operator-menu button { display: block; width: 100%; padding: 12px 15px; text-align: left; color: var(--cyan); font: 600 10px ui-monospace; letter-spacing: .1em; }
-  .operator-menu button:hover { background: #0d3038; }
+  .auth-brand strong { display:block; color:var(--cyan); font-size:clamp(24px,4vw,38px); font-weight:400; letter-spacing:-.04em; }
+  .auth-brand small { display:block; margin-top:3px; color:#ef826e; font:600 9px ui-monospace; letter-spacing:.06em; }
+  .overview-workspace { display:grid; gap:28px; }
+  .club-nav-item { align-items:start !important; }.club-nav-item > span:last-child { display:grid; gap:2px; text-align:left; }.club-nav-item small { color:var(--muted); font-size:.68rem; text-transform:uppercase; }
+  .admin-workspace { display:grid; gap:22px; }.admin-intro { border:1px solid color-mix(in srgb,var(--amber) 40%,var(--line)); background:color-mix(in srgb,var(--amber) 8%,var(--panel)); border-radius:12px; padding:20px; }.admin-intro h1,.admin-intro p { margin:4px 0; }.admin-intro p:last-child { color:var(--muted); max-width:760px; }
+  .overview-intro { display:flex; justify-content:space-between; align-items:end; gap:24px; }
+  .overview-intro h1 { max-width:700px; margin:4px 0 10px; font-size:clamp(36px,5vw,66px); }
+  .overview-intro p { max-width:670px; margin:0; color:var(--muted); font-size:16px; line-height:1.55; }
+  .overview-actions { display:flex; flex-wrap:wrap; gap:9px; }
+  .overview-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr); gap:16px; }
+  .command-card { padding:22px; border:1px solid var(--line); background:var(--panel); }
+  .command-card h2 { margin:4px 0 17px; }
+  .queue-item { width:100%; display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:13px; padding:13px 0; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+  .queue-item:first-of-type { border-top:0; }
+  .queue-item:hover b { color:var(--cyan); }
+  .queue-item > span { color:var(--amber); font-size:20px; }
+  .queue-item div { display:grid; gap:4px; }.queue-item small,.queue-item em { color:var(--muted); font-style:normal; font-size:12px; }.queue-item em { color:var(--cyan); }
+  .identity-summary > b { display:block; margin:8px 0; color:var(--cyan); font:500 27px ui-monospace; }.identity-summary p { color:var(--muted); line-height:1.5; }
   .profile-panel { max-width: 850px; }
   .lede { max-width: 760px; color: var(--muted); line-height: 1.6; }
   .profile-form { display: grid; gap: 14px; margin-top: 28px; }
@@ -349,6 +400,6 @@
   .profile-grid b { color: var(--cyan); }
   @media (max-width: 650px) { .profile-grid { grid-template-columns: 1fr; } }
   @media (max-width: 650px) { .profile-section, .address-section { grid-template-columns: 1fr; } .profile-section > div { display: block; } }
-  @media (max-width: 850px) { .site-header { align-items:flex-start; flex-direction:column; } .site-header-right { width:100%; justify-content:space-between; gap:10px; } }
-  @media (max-width: 520px) { .public-page { width:calc(100% - 24px); } .site-header-right { align-items:flex-start; flex-direction:column; } .site-links { flex-wrap:wrap; } .site-brand img { width:48px; height:48px; } }
+  @media (max-width: 850px) { .overview-intro { align-items:stretch; flex-direction:column; } .overview-grid { grid-template-columns:1fr; } }
+  @media (max-width: 520px) { .public-page { width:calc(100% - 24px); } }
 </style>

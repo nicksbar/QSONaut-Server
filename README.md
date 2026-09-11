@@ -51,6 +51,7 @@ The simplest local setup uses Docker. From the repository root, start the
 development-only PostgreSQL container:
 
 ```bash
+export QSONAUT_DEV_DATABASE_PASSWORD="$(openssl rand -base64 32)"
 docker compose -f deploy/postgres-dev.compose.yaml up -d
 docker compose -f deploy/postgres-dev.compose.yaml ps
 ```
@@ -58,21 +59,22 @@ docker compose -f deploy/postgres-dev.compose.yaml ps
 Wait until `postgres` reports `healthy`, then configure the server process:
 
 ```bash
-export QSONAUT_DATABASE_URL=postgresql://qsonaut:qsonaut-dev-password@127.0.0.1:5432/qsonaut
+export QSONAUT_DATABASE_URL="postgresql://qsonaut:${QSONAUT_DEV_DATABASE_PASSWORD}@127.0.0.1:5432/qsonaut"
 export QSONAUT_SECURE_COOKIES=false
 cargo run -p qsonaut-server
 ```
 
 The Rust server creates or upgrades its tables automatically when it connects.
-The password above is intentionally only for a database bound to the local
-machine; do not use it for a LAN or hosted deployment.
+The development password is supplied from your shell rather than being stored
+in the repository. Keep it out of shell history where practical, and never
+reuse it for a LAN or hosted deployment.
 
 If port `5432` is already occupied, select another host port and use that same
 port in `QSONAUT_DATABASE_URL`:
 
 ```bash
 QSONAUT_DEV_POSTGRES_PORT=5433 docker compose -f deploy/postgres-dev.compose.yaml up -d
-export QSONAUT_DATABASE_URL=postgresql://qsonaut:qsonaut-dev-password@127.0.0.1:5433/qsonaut
+export QSONAUT_DATABASE_URL="postgresql://qsonaut:${QSONAUT_DEV_DATABASE_PASSWORD}@127.0.0.1:5433/qsonaut"
 ```
 
 Run the management console in another terminal. The install command is only

@@ -17,6 +17,15 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Install coverage tooling
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate Rust coverage report
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+      - name: Upload Rust coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: qsonaut-server-rust-coverage
+          path: lcov.info
 
   web:
     runs-on: ubuntu-latest

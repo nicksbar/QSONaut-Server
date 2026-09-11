@@ -119,6 +119,7 @@ export type Club = {
   member_count: number;
   renewal_attention_count: number;
   my_role: string | null;
+  my_membership_status: string | null;
   join_request_status: string | null;
   can_manage: boolean;
 };
@@ -256,6 +257,14 @@ export type EventParticipant = {
   station_label: string;
   band: string | null;
   mode: string | null;
+};
+
+export type EventScore = {
+  event_id: string;
+  total_points: number;
+  qso_count: number;
+  duplicate_count: number;
+  multiplier_values: Record<string, unknown>;
 };
 
 export type QsoLog = {

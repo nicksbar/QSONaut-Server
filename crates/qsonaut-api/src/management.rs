@@ -349,7 +349,7 @@ pub(crate) async fn events(
             .clubs(user.id, false)
             .await?
             .into_iter()
-            .filter(|club| club.my_role.is_some())
+            .filter(|club| club.my_membership_status.as_deref() == Some("active"))
             .map(|club| club.id)
             .collect::<std::collections::HashSet<_>>();
         events.retain(|event| club_ids.contains(&event.club_id));
@@ -691,8 +691,9 @@ pub(crate) async fn stations(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<StationPresence>>> {
-    require_admin(&state, &jar).await?;
-    Ok(Json(state.store.station_presence(None).await?))
+    let user = require_user(&state, &jar).await?;
+    let scope = if user.global_role == "administrator" { None } else { Some(user.id) };
+    Ok(Json(state.store.station_presence(scope).await?))
 }
 
 #[utoipa::path(put, path = "/api/v1/stations/presence", tag = "activity", request_body = StationPresenceInput, responses((status = 200, body = StationPresence)))]
@@ -869,18 +870,22 @@ pub(crate) async fn diagnostics(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<qsonaut_protocol::DiagnosticReport>>> {
-    let user = require_admin(&state, &jar).await?;
-    state
-        .store
-        .record_audit_event(
-            Some(user.id),
-            "diagnostics_inspected",
-            "diagnostic_reports",
-            None,
-            &serde_json::json!({"limit": 500}),
-        )
-        .await?;
-    Ok(Json(state.store.diagnostic_reports(500).await?))
+    let user = require_user(&state, &jar).await?;
+    if user.global_role == "administrator" {
+        state
+            .store
+            .record_audit_event(
+                Some(user.id),
+                "diagnostics_inspected",
+                "diagnostic_reports",
+                None,
+                &serde_json::json!({"limit": 500}),
+            )
+            .await?;
+        Ok(Json(state.store.diagnostic_reports(500).await?))
+    } else {
+        Ok(Json(state.store.diagnostic_reports_for_user(user.id, 100).await?))
+    }
 }
 
 #[utoipa::path(get, path = "/api/v1/diagnostics/export", tag = "activity", responses((status = 200, body = [DiagnosticReport]), (status = 403)))]

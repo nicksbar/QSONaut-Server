@@ -337,6 +337,7 @@ pub struct Club {
     pub member_count: i64,
     pub renewal_attention_count: i64,
     pub my_role: Option<String>,
+    pub my_membership_status: Option<String>,
     pub join_request_status: Option<String>,
     pub can_manage: bool,
 }
