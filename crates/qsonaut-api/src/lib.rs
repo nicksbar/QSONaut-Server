@@ -376,8 +376,10 @@ async fn openapi() -> Json<utoipa::openapi::OpenApi> {
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
+    use chrono::{Duration, Utc};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn health_contract_is_versioned_and_ready() {
@@ -427,6 +429,193 @@ mod tests {
                 .iter()
                 .any(|item| item == "PTT and transmit activity")
         );
+    }
+
+    #[tokio::test]
+    async fn member_can_read_only_their_own_station_presence() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping station API contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let user_id = Uuid::new_v4();
+        let callsign = format!("T{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "station-api-contract-password";
+        let hash = auth::hash_password(password.to_owned()).await.expect("hash password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Station API contract',$3,'member')")
+            .bind(user_id).bind(&callsign).bind(hash).execute(store.pool()).await.expect("insert API test user");
+        let instance_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO station_presence (id,user_id,instance_id,station_label,qsonaut_version,platform,status,metadata) VALUES ($1,$2,$3,'owned station','test','linux','online','{}')")
+            .bind(Uuid::new_v4()).bind(user_id).bind(instance_id).execute(store.pool()).await.expect("insert owned station");
+        let login = router_with_store(store.clone(), false).oneshot(Request::builder().method("POST").uri("/api/v1/auth/login").header("content-type", "application/json").body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#))).expect("login request")).await.expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login.headers().get("set-cookie").expect("session cookie").to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+        let response = router_with_store(store, false).oneshot(Request::builder().uri("/api/v1/stations").header("cookie", cookie).body(Body::empty()).expect("station request")).await.expect("station response");
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().collect().await.expect("station body").to_bytes();
+        let stations: Vec<serde_json::Value> = serde_json::from_slice(&body).expect("station JSON");
+        assert_eq!(stations.len(), 1);
+        assert_eq!(stations[0]["instance_id"], instance_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn administrator_can_review_global_station_and_diagnostic_data() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping administrator API contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let member_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
+        let member_callsign = format!("M{}", &member_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let admin_callsign = format!("A{}", &admin_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "global-review-contract-password";
+        let member_hash = auth::hash_password(password.to_owned()).await.expect("hash member password");
+        let admin_hash = auth::hash_password(password.to_owned()).await.expect("hash admin password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Review member',$3,'member'),($4,$5,'Review administrator',$6,'administrator')")
+            .bind(member_id).bind(&member_callsign).bind(member_hash)
+            .bind(admin_id).bind(&admin_callsign).bind(admin_hash)
+            .execute(store.pool()).await.expect("insert API test users");
+
+        let member_instance = Uuid::new_v4();
+        let admin_instance = Uuid::new_v4();
+        for (user_id, instance_id, label) in [
+            (member_id, member_instance, "member station"),
+            (admin_id, admin_instance, "administrator station"),
+        ] {
+            sqlx::query("INSERT INTO station_presence (id,user_id,instance_id,station_label,qsonaut_version,platform,status,metadata) VALUES ($1,$2,$3,$4,'test','linux','online','{}')")
+                .bind(Uuid::new_v4()).bind(user_id).bind(instance_id).bind(label)
+                .execute(store.pool()).await.expect("insert station presence");
+        }
+        let member_report = store.create_diagnostic_report(member_id, &DiagnosticReportInput {
+            instance_id: member_instance,
+            category: "audio".to_owned(),
+            summary: "member report".to_owned(),
+            payload: serde_json::json!({"source": "api-contract"}),
+        }).await.expect("create member diagnostic");
+        let admin_report = store.create_diagnostic_report(admin_id, &DiagnosticReportInput {
+            instance_id: admin_instance,
+            category: "radio".to_owned(),
+            summary: "administrator report".to_owned(),
+            payload: serde_json::json!({"source": "api-contract"}),
+        }).await.expect("create administrator diagnostic");
+
+        async fn login_cookie(store: Store, callsign: &str, password: &str) -> String {
+            let response = router_with_store(store, false).oneshot(
+                Request::builder().method("POST").uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#)))
+                    .expect("login request")
+            ).await.expect("login response");
+            assert_eq!(response.status(), 200);
+            response.headers().get("set-cookie").expect("session cookie")
+                .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned()
+        }
+
+        let member_cookie = login_cookie(store.clone(), &member_callsign, password).await;
+        let member_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/diagnostics").header("cookie", member_cookie)
+                .body(Body::empty()).expect("member diagnostics request")
+        ).await.expect("member diagnostics response");
+        assert_eq!(member_response.status(), 200);
+        let member_body = member_response.into_body().collect().await.expect("member diagnostics body").to_bytes();
+        let member_reports: Vec<DiagnosticReport> = serde_json::from_slice(&member_body).expect("member diagnostics JSON");
+        assert!(member_reports.iter().all(|report| report.id == member_report.id));
+
+        let admin_cookie = login_cookie(store.clone(), &admin_callsign, password).await;
+        let admin_station_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/stations").header("cookie", &admin_cookie)
+                .body(Body::empty()).expect("administrator station request")
+        ).await.expect("administrator station response");
+        assert_eq!(admin_station_response.status(), 200);
+        let station_body = admin_station_response.into_body().collect().await.expect("station body").to_bytes();
+        let stations: Vec<StationPresence> = serde_json::from_slice(&station_body).expect("station JSON");
+        assert!(stations.iter().any(|station| station.instance_id == member_instance));
+        assert!(stations.iter().any(|station| station.instance_id == admin_instance));
+
+        let admin_diagnostic_response = router_with_store(store, false).oneshot(
+            Request::builder().uri("/api/v1/diagnostics").header("cookie", admin_cookie)
+                .body(Body::empty()).expect("administrator diagnostics request")
+        ).await.expect("administrator diagnostics response");
+        assert_eq!(admin_diagnostic_response.status(), 200);
+        let diagnostic_body = admin_diagnostic_response.into_body().collect().await.expect("diagnostics body").to_bytes();
+        let reports: Vec<DiagnosticReport> = serde_json::from_slice(&diagnostic_body).expect("diagnostics JSON");
+        assert!(reports.iter().any(|report| report.id == member_report.id));
+        assert!(reports.iter().any(|report| report.id == admin_report.id));
+    }
+
+    #[tokio::test]
+    async fn member_sees_events_only_for_active_clubs_they_belong_to() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping event visibility contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let member_id = Uuid::new_v4();
+        let other_owner_id = Uuid::new_v4();
+        let member_callsign = format!("E{}", &member_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let other_callsign = format!("O{}", &other_owner_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "event-visibility-contract-password";
+        let member_hash = auth::hash_password(password.to_owned()).await.expect("hash member password");
+        let other_hash = auth::hash_password(password.to_owned()).await.expect("hash other password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Event member',$3,'member'),($4,$5,'Other club owner',$6,'member')")
+            .bind(member_id).bind(&member_callsign).bind(member_hash)
+            .bind(other_owner_id).bind(&other_callsign).bind(other_hash)
+            .execute(store.pool()).await.expect("insert event test users");
+
+        let member_club = store.create_club(&ClubInput {
+            name: format!("Visible Club {}", &member_id.simple().to_string()[..6]),
+            callsign: None,
+            description: "club visible to the member".to_owned(),
+        }, member_id).await.expect("create member club");
+        let other_club = store.create_club(&ClubInput {
+            name: format!("Hidden Club {}", &other_owner_id.simple().to_string()[..6]),
+            callsign: None,
+            description: "club outside the member scope".to_owned(),
+        }, other_owner_id).await.expect("create unrelated club");
+        let now = Utc::now();
+        let visible_event = store.create_event(&EventInput {
+            club_id: member_club.id,
+            name: "Member-visible contest".to_owned(),
+            contest_name: "Test contest".to_owned(),
+            special_callsign: None,
+            starts_at: now,
+            ends_at: now + Duration::hours(2),
+            status: EventStatus::Scheduled,
+            contest_template_id: None,
+            contest_config: serde_json::json!({}),
+        }).await.expect("create visible event");
+        let hidden_event = store.create_event(&EventInput {
+            club_id: other_club.id,
+            name: "Unrelated contest".to_owned(),
+            contest_name: "Test contest".to_owned(),
+            special_callsign: None,
+            starts_at: now,
+            ends_at: now + Duration::hours(2),
+            status: EventStatus::Scheduled,
+            contest_template_id: None,
+            contest_config: serde_json::json!({}),
+        }).await.expect("create hidden event");
+
+        let login = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"callsign":"{member_callsign}","password":"{password}"}}"#)))
+                .expect("login request")
+        ).await.expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login.headers().get("set-cookie").expect("session cookie")
+            .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+        let response = router_with_store(store, false).oneshot(
+            Request::builder().uri("/api/v1/events").header("cookie", cookie)
+                .body(Body::empty()).expect("events request")
+        ).await.expect("events response");
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().collect().await.expect("events body").to_bytes();
+        let events: Vec<Event> = serde_json::from_slice(&body).expect("events JSON");
+        assert!(events.iter().any(|event| event.id == visible_event.id));
+        assert!(!events.iter().any(|event| event.id == hidden_event.id));
+        assert!(events.iter().all(|event| event.club_id == member_club.id));
     }
 
     #[test]

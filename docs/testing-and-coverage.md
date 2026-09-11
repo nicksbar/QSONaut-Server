@@ -5,19 +5,18 @@ Rust job uploads the LCOV artifact and prints the summary for every build.
 
 ## Baseline
 
-Measured after the first ownership and visibility contract expansion on the
-server-console-boundaries feature branch:
+Measured after adding authenticated station, diagnostic, and event visibility
+contracts on the server-console-boundaries feature branch:
 
-- 31.06% region coverage
-- 30.02% line coverage
-- 27.05% function coverage
+- 43.92% region coverage
+- 40.80% line coverage
+- 36.50% function coverage
 
 The distribution matters: the contest catalog is 100%, the protocol is about
 69% by line, but the API and store contain many unexercised management paths.
-The store is now about 45% by region and line coverage after adding useful
-membership, activity, log-visibility, diagnostic-ownership, and station-
-ownership contracts. The remaining gap is concentrated in authenticated API
-handlers and the broader store management surface.
+The contest catalog is 100%, the protocol is about 75% by line, and the store
+is now about 51% by line coverage. The remaining gap is concentrated in
+authenticated API handlers and the broader store management surface.
 
 ## Path to 50%+
 
