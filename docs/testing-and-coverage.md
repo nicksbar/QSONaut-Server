@@ -6,12 +6,13 @@ Rust job uploads the LCOV artifact and prints the summary for every build.
 ## Baseline
 
 Measured after adding authenticated profile, club creation, join-request,
-station, diagnostic, event visibility, and administrator-boundary contracts on
-the server-console-boundaries feature branch:
+station, diagnostic, event visibility, activity-sharing, and
+administrator-boundary contracts on the server-console-boundaries feature
+branch:
 
-- 51.07% region coverage
-- 47.13% line coverage
-- 44.24% function coverage
+- 54.68% region coverage
+- 50.32% line coverage
+- 47.60% function coverage
 
 The distribution matters: the contest catalog is 100%, the protocol is about
 69% by line, but the API and store contain many unexercised management paths.

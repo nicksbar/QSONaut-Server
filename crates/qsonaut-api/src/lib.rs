@@ -722,8 +722,8 @@ mod tests {
         assert_eq!(workspace_club.my_membership_status.as_deref(), Some("active"));
         assert!(workspace_club.can_manage);
 
-        let me_response = router_with_store_and_policy(store, false, policy).oneshot(
-            Request::builder().uri("/api/v1/auth/me").header("cookie", cookie)
+        let me_response = router_with_store_and_policy(store.clone(), false, policy).oneshot(
+            Request::builder().uri("/api/v1/auth/me").header("cookie", &cookie)
                 .body(Body::empty()).expect("me request")
         ).await.expect("me response");
         assert_eq!(me_response.status(), 200);
@@ -731,6 +731,16 @@ mod tests {
             &me_response.into_body().collect().await.expect("me body").to_bytes()
         ).expect("me JSON");
         assert_eq!(me.display_name, "Updated profile");
+
+        let profile_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/auth/profile").header("cookie", &cookie)
+                .body(Body::empty()).expect("profile request")
+        ).await.expect("profile response");
+        assert_eq!(profile_response.status(), 200);
+        let profile: UserProfile = serde_json::from_slice(
+            &profile_response.into_body().collect().await.expect("profile body").to_bytes()
+        ).expect("profile JSON");
+        assert_eq!(profile.user.display_name, "Updated profile");
     }
 
     #[tokio::test]
@@ -805,6 +815,94 @@ mod tests {
         ).expect("decision JSON");
         assert_eq!(approved.status, "approved");
         assert_eq!(store.club_role(club.id, member_id).await.expect("membership lookup").as_deref(), Some("operator"));
+    }
+
+    #[tokio::test]
+    async fn member_can_submit_log_and_change_activity_visibility() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping activity sharing contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let user_id = Uuid::new_v4();
+        let callsign = format!("S{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "activity-sharing-contract-password";
+        let hash = auth::hash_password(password.to_owned()).await.expect("hash password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Sharing member',$3,'member')")
+            .bind(user_id).bind(&callsign).bind(hash).execute(store.pool()).await
+            .expect("insert sharing test user");
+        let login = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#)))
+                .expect("login request")
+        ).await.expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login.headers().get("set-cookie").expect("session cookie")
+            .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+        let idempotency_key = Uuid::new_v4();
+        let occurred_at = Utc::now();
+        let log_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/logs")
+                .header("content-type", "application/json").header("cookie", &cookie)
+                .body(Body::from(format!(r#"{{"idempotency_key":"{idempotency_key}","callsign":"k1abc","band":"20m","mode":"FT8","occurred_at":"{}","exchange":{{"section":"OR"}},"source":"api-contract"}}"#, occurred_at.to_rfc3339())))
+                .expect("log request")
+        ).await.expect("log response");
+        assert_eq!(log_response.status(), 200);
+        let log: QsoLog = serde_json::from_slice(
+            &log_response.into_body().collect().await.expect("log body").to_bytes()
+        ).expect("log JSON");
+        assert_eq!(log.user_id, user_id);
+        assert_eq!(log.mode, "FT8");
+
+        let logs_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/logs").header("cookie", &cookie)
+                .body(Body::empty()).expect("logs request")
+        ).await.expect("logs response");
+        assert_eq!(logs_response.status(), 200);
+        let logs: Vec<QsoLog> = serde_json::from_slice(
+            &logs_response.into_body().collect().await.expect("logs body").to_bytes()
+        ).expect("logs JSON");
+        assert!(logs.iter().any(|item| item.id == log.id));
+
+        let visibility_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("PUT").uri("/api/v1/activity/visibility")
+                .header("content-type", "application/json").header("cookie", &cookie)
+                .body(Body::from(r#"{"scope":"overall","visibility":"global"}"#))
+                .expect("visibility request")
+        ).await.expect("visibility response");
+        assert_eq!(visibility_response.status(), 200);
+        let visibility: ActivityVisibility = serde_json::from_slice(
+            &visibility_response.into_body().collect().await.expect("visibility body").to_bytes()
+        ).expect("visibility JSON");
+        assert_eq!(visibility.scope, "overall");
+        assert_eq!(visibility.visibility, "global");
+
+        let policies_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/activity/visibility").header("cookie", &cookie)
+                .body(Body::empty()).expect("policies request")
+        ).await.expect("policies response");
+        assert_eq!(policies_response.status(), 200);
+        let policies: Vec<ActivityVisibility> = serde_json::from_slice(
+            &policies_response.into_body().collect().await.expect("policies body").to_bytes()
+        ).expect("policies JSON");
+        assert!(policies.iter().any(|policy| policy.scope == "overall" && policy.visibility == "global"));
+
+        let summary_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/activity/summary?scope=overall&period_days=30")
+                .header("cookie", &cookie).body(Body::empty()).expect("summary request")
+        ).await.expect("summary response");
+        assert_eq!(summary_response.status(), 200);
+        let summary: ActivitySummary = serde_json::from_slice(
+            &summary_response.into_body().collect().await.expect("summary body").to_bytes()
+        ).expect("summary JSON");
+        assert_eq!(summary.qso_count, 1);
+
+        let invalid_summary = router_with_store(store, false).oneshot(
+            Request::builder().uri("/api/v1/activity/summary?scope=invalid")
+                .header("cookie", cookie).body(Body::empty()).expect("invalid summary request")
+        ).await.expect("invalid summary response");
+        assert_eq!(invalid_summary.status(), 400);
     }
 
     #[test]
