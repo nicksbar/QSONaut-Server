@@ -73,6 +73,11 @@ impl IntoResponse for HttpError {
 pub(crate) type HttpResult<T> = Result<T, HttpError>;
 impl From<sqlx::Error> for HttpError {
     fn from(error: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(db) = &error
+            && db.code().as_deref() == Some("P1001")
+        {
+            return Self::bad_request(db.message());
+        }
         if matches!(error, sqlx::Error::RowNotFound) {
             return Self::not_found();
         }

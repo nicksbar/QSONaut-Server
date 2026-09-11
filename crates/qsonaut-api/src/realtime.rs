@@ -125,39 +125,7 @@ async fn handle_message(
         ClientMessage::Hello { .. } => Ok(ServerMessage::Ack),
         ClientMessage::Sync => {
             require_scope(scopes, "events:read")?;
-            require_scope(scopes, "messages:read")?;
-            let mut events = state
-                .store
-                .events()
-                .await
-                .map_err(|error| internal_error(&error))?;
-            let contest_templates = state
-                .store
-                .contest_templates()
-                .await
-                .map_err(|error| internal_error(&error))?;
-            let channel_messages = state
-                .store
-                .channel_messages(200)
-                .await
-                .map_err(|error| internal_error(&error))?;
-            let mut clubs = state
-                .store
-                .clubs(user.id, false)
-                .await
-                .map_err(|error| internal_error(&error))?;
-            clubs.retain(|club| club.my_role.is_some());
-            let club_ids = clubs
-                .iter()
-                .map(|club| club.id)
-                .collect::<std::collections::HashSet<_>>();
-            events.retain(|event| club_ids.contains(&event.club_id));
-            Ok(ServerMessage::Snapshot {
-                events,
-                contest_templates,
-                channel_messages,
-                clubs,
-            })
+            sync_snapshot(state, user, has_scope(scopes, "messages:read")).await
         }
         ClientMessage::Presence(input) => {
             require_scope(scopes, "presence:write")?;
@@ -172,18 +140,25 @@ async fn handle_message(
         ClientMessage::Log(input) => {
             require_scope(scopes, "logs:write")?;
             validate_log(&input)?;
-            state
+            let qso = state
                 .store
                 .create_qso_log(user.id, &input)
                 .await
-                .map(ServerMessage::LogAccepted)
-                .map_err(|error| {
-                    if matches!(&error, sqlx::Error::Database(db) if db.is_unique_violation()) {
-                        "log event was already accepted".to_owned()
-                    } else {
-                        internal_error(&error)
-                    }
-                })
+                .map_err(|error| log_submission_error(&error))?;
+            let event_score = match qso.event_id {
+                Some(event_id) => Some(
+                    state
+                        .store
+                        .event_score(event_id)
+                        .await
+                        .map_err(|error| internal_error(&error))?,
+                ),
+                None => None,
+            };
+            Ok(ServerMessage::LogAccepted {
+                qso: Box::new(qso),
+                event_score,
+            })
         }
         ClientMessage::Diagnostic(input) => {
             require_scope(scopes, "diagnostics:write")?;
@@ -218,6 +193,79 @@ async fn handle_message(
     }
 }
 
+async fn sync_snapshot(
+    state: &AppState,
+    user: &CurrentUser,
+    include_messages: bool,
+) -> Result<ServerMessage, String> {
+    let mut events = state
+        .store
+        .events()
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let contest_templates = state
+        .store
+        .contest_templates()
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let channel_messages = if include_messages {
+        state
+            .store
+            .channel_messages(200)
+            .await
+            .map_err(|error| internal_error(&error))?
+    } else {
+        Vec::new()
+    };
+    let identities = state
+        .store
+        .managed_callsigns_for_user(user.id)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let mut clubs = state
+        .store
+        .clubs(user.id, false)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    clubs.retain(|club| club.my_role.is_some());
+    let club_ids = clubs
+        .iter()
+        .map(|club| club.id)
+        .collect::<std::collections::HashSet<_>>();
+    events.retain(|event| club_ids.contains(&event.club_id));
+    let mut participants = Vec::new();
+    for event in &events {
+        participants.extend(
+            state
+                .store
+                .event_participants(event.id)
+                .await
+                .map_err(|error| internal_error(&error))?
+                .into_iter()
+                .filter(|participant| participant.user_id == user.id),
+        );
+    }
+    let mut event_scores = Vec::with_capacity(events.len());
+    for event in &events {
+        event_scores.push(
+            state
+                .store
+                .event_score(event.id)
+                .await
+                .map_err(|error| internal_error(&error))?,
+        );
+    }
+    Ok(ServerMessage::Snapshot {
+        events,
+        contest_templates,
+        event_scores,
+        identities,
+        participants,
+        channel_messages,
+        clubs,
+    })
+}
+
 fn has_scope(scopes: &[String], required: &str) -> bool {
     scopes.iter().any(|scope| scope == required)
 }
@@ -226,6 +274,19 @@ fn require_scope(scopes: &[String], required: &str) -> Result<(), String> {
     has_scope(scopes, required)
         .then_some(())
         .ok_or_else(|| format!("device token lacks required scope: {required}"))
+}
+
+fn log_submission_error(error: &sqlx::Error) -> String {
+    if let sqlx::Error::Database(db) = error
+        && db.code().as_deref() == Some("P1001")
+    {
+        return db.message().to_owned();
+    }
+    if matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()) {
+        "log event was already accepted".to_owned()
+    } else {
+        internal_error(error)
+    }
 }
 
 fn validate_channel_message(input: &qsonaut_protocol::ChannelMessageInput) -> Result<(), String> {
@@ -370,6 +431,8 @@ mod tests {
     fn log_validation_rejects_malformed_records_but_ignores_legacy_visibility() {
         let mut input = QsoLogInput {
             event_id: None,
+            operating_callsign: None,
+            callsign_id: None,
             visibility: "global".to_owned(),
             visibility_club_id: None,
             idempotency_key: uuid::Uuid::new_v4(),

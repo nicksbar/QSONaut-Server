@@ -349,6 +349,74 @@ pub struct ClubInput {
     pub description: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ManagedCallsign {
+    pub id: Uuid,
+    pub callsign: String,
+    pub identity_type: String,
+    pub owner_user_id: Option<Uuid>,
+    pub club_id: Option<Uuid>,
+    pub event_id: Option<Uuid>,
+    pub status: String,
+    pub effective_from: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub verification_status: String,
+    pub authority: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ManagedCallsignInput {
+    pub event_id: Uuid,
+    pub callsign: String,
+    #[serde(default)]
+    pub authority: String,
+    #[serde(default)]
+    pub authority_reference: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ManagedCallsignStatusInput {
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EventParticipant {
+    pub id: Uuid,
+    pub event_id: Uuid,
+    pub user_id: Uuid,
+    pub club_id: Uuid,
+    pub callsign_id: Uuid,
+    pub operator_callsign: String,
+    pub operating_callsign: String,
+    pub role: String,
+    pub status: String,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+    pub station_label: String,
+    pub band: Option<String>,
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EventParticipantInput {
+    pub user_id: Uuid,
+    pub callsign_id: Uuid,
+    pub operator_callsign: String,
+    pub role: String,
+    #[serde(default = "default_participant_status")]
+    pub status: String,
+    pub starts_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub station_label: String,
+    pub band: Option<String>,
+    pub mode: Option<String>,
+}
+
+fn default_participant_status() -> String {
+    "active".to_owned()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EventStatus {
@@ -383,8 +451,18 @@ pub struct Event {
     pub ends_at: DateTime<Utc>,
     pub status: EventStatus,
     pub contest_template_id: Option<Uuid>,
+    pub contest_definition_version: Option<i32>,
     pub contest_config: serde_json::Value,
     pub participant_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EventScore {
+    pub event_id: Uuid,
+    pub total_points: i64,
+    pub qso_count: i64,
+    pub duplicate_count: i64,
+    pub multiplier_values: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -483,6 +561,15 @@ pub struct QsoLog {
     pub id: Uuid,
     pub user_id: Uuid,
     pub operator_callsign: String,
+    pub operating_callsign: Option<String>,
+    pub callsign_id: Option<Uuid>,
+    pub contest_template_id: Option<Uuid>,
+    pub contest_definition_version: Option<i32>,
+    pub contest_config: serde_json::Value,
+    pub is_duplicate: bool,
+    pub multipliers: serde_json::Value,
+    pub scoring_version: Option<String>,
+    pub scoring_explanation: String,
     pub event_id: Option<Uuid>,
     pub event_name: Option<String>,
     pub visibility: String,
@@ -503,6 +590,10 @@ pub struct QsoLog {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct QsoLogInput {
     pub event_id: Option<Uuid>,
+    #[serde(default)]
+    pub operating_callsign: Option<String>,
+    #[serde(default)]
+    pub callsign_id: Option<Uuid>,
     #[serde(default = "default_qso_visibility")]
     pub visibility: String,
     #[serde(default)]
@@ -666,10 +757,18 @@ pub enum ServerMessage {
         events: Vec<Event>,
         clubs: Vec<Club>,
         contest_templates: Vec<ContestTemplate>,
+        #[serde(default)]
+        event_scores: Vec<EventScore>,
+        identities: Vec<ManagedCallsign>,
+        participants: Vec<EventParticipant>,
         channel_messages: Vec<ChannelMessage>,
     },
     PresenceAccepted(StationPresence),
-    LogAccepted(QsoLog),
+    LogAccepted {
+        qso: Box<QsoLog>,
+        #[serde(default)]
+        event_score: Option<EventScore>,
+    },
     DiagnosticAccepted(DiagnosticReport),
     ChannelMessageAccepted(ChannelMessage),
     ChannelMessagePublished(ChannelMessage),
@@ -700,6 +799,15 @@ mod tests {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             operator_callsign: "N7UF".to_owned(),
+            operating_callsign: None,
+            callsign_id: None,
+            contest_template_id: None,
+            contest_definition_version: None,
+            contest_config: serde_json::json!({}),
+            is_duplicate: false,
+            multipliers: serde_json::json!({}),
+            scoring_version: None,
+            scoring_explanation: String::new(),
             event_id: Some(Uuid::new_v4()),
             event_name: Some("Field Day".to_owned()),
             visibility: "private".to_owned(),

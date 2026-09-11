@@ -222,8 +222,40 @@ export type Event = {
   ends_at: string;
   status: string;
   contest_template_id: string | null;
+  contest_definition_version: number | null;
   contest_config: Record<string, unknown>;
   participant_count: number;
+};
+
+export type ManagedCallsign = {
+  id: string;
+  callsign: string;
+  identity_type: 'personal' | 'club' | 'special';
+  owner_user_id: string | null;
+  club_id: string | null;
+  event_id: string | null;
+  status: string;
+  effective_from: string;
+  expires_at: string | null;
+  verification_status: string;
+  authority: string;
+};
+
+export type EventParticipant = {
+  id: string;
+  event_id: string;
+  user_id: string;
+  club_id: string;
+  callsign_id: string;
+  operator_callsign: string;
+  operating_callsign: string;
+  role: string;
+  status: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  station_label: string;
+  band: string | null;
+  mode: string | null;
 };
 
 export type QsoLog = {
