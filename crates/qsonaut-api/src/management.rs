@@ -341,8 +341,20 @@ pub(crate) async fn events(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<Event>>> {
-    require_user(&state, &jar).await?;
-    Ok(Json(state.store.events().await?))
+    let user = require_user(&state, &jar).await?;
+    let mut events = state.store.events().await?;
+    if user.global_role != "administrator" {
+        let club_ids = state
+            .store
+            .clubs(user.id, false)
+            .await?
+            .into_iter()
+            .filter(|club| club.my_role.is_some())
+            .map(|club| club.id)
+            .collect::<std::collections::HashSet<_>>();
+        events.retain(|event| club_ids.contains(&event.club_id));
+    }
+    Ok(Json(events))
 }
 
 #[utoipa::path(get, path = "/api/v1/identities", tag = "management", responses((status = 200, body = [ManagedCallsign])))]
@@ -351,7 +363,11 @@ pub(crate) async fn identities(
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<ManagedCallsign>>> {
     let user = require_user(&state, &jar).await?;
-    Ok(Json(state.store.managed_callsigns_for_user(user.id).await?))
+    Ok(Json(if user.global_role == "administrator" {
+        state.store.managed_callsigns().await?
+    } else {
+        state.store.managed_callsigns_for_user(user.id).await?
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/identities/special", tag = "management", request_body = ManagedCallsignInput, responses((status = 200, body = ManagedCallsign)))]
@@ -504,8 +520,56 @@ pub(crate) async fn create_event_participant(
     Ok(Json(
         state
             .store
-            .create_event_participant(event_id, &input)
+            .create_event_participant(event_id, &input, Some(user.id))
             .await?,
+    ))
+}
+
+#[utoipa::path(patch, path = "/api/v1/events/{event_id}/participants/{participant_id}", tag = "management", params(("event_id" = Uuid, Path), ("participant_id" = Uuid, Path)), request_body = EventParticipantInput, responses((status = 200, body = EventParticipant), (status = 404, description = "Assignment not found")))]
+pub(crate) async fn update_event_participant(
+    Path((event_id, participant_id)): Path<(Uuid, Uuid)>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(input): Json<EventParticipantInput>,
+) -> HttpResult<Json<EventParticipant>> {
+    let user = require_user(&state, &jar).await?;
+    let club_id = state
+        .store
+        .event_club_id(event_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    require_club_manager(&state, &user, club_id).await?;
+    if !["operator", "coordinator", "logger", "observer"].contains(&input.role.as_str()) {
+        return Err(HttpError::bad_request("invalid participant role"));
+    }
+    if ![
+        "pending",
+        "invited",
+        "active",
+        "suspended",
+        "withdrawn",
+        "completed",
+    ]
+    .contains(&input.status.as_str())
+    {
+        return Err(HttpError::bad_request("invalid participant status"));
+    }
+    let target = state
+        .store
+        .user(input.user_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    if target.callsign != input.operator_callsign.trim().to_ascii_uppercase() {
+        return Err(HttpError::bad_request(
+            "operator callsign must match the assigned user",
+        ));
+    }
+    Ok(Json(
+        state
+            .store
+            .update_event_participant(event_id, participant_id, &input, user.id)
+            .await?
+            .ok_or_else(HttpError::not_found)?,
     ))
 }
 #[utoipa::path(post, path = "/api/v1/events", tag = "management", request_body = EventInput, responses((status = 200, body = Event)))]
@@ -514,10 +578,11 @@ pub(crate) async fn create_event(
     jar: CookieJar,
     Json(mut input): Json<EventInput>,
 ) -> HttpResult<Json<Event>> {
-    require_admin(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
     if !state.store.club_exists(input.club_id).await? {
         return Err(HttpError::bad_request("unknown club"));
     }
+    let authority = require_club_manager(&state, &user, input.club_id).await?;
     validate_event_identity(&input.name, input.special_callsign.as_deref())?;
     if input.ends_at <= input.starts_at {
         return Err(HttpError::bad_request("event end must be after its start"));
@@ -540,7 +605,12 @@ pub(crate) async fn create_event(
         .special_callsign
         .map(|call| call.trim().to_ascii_uppercase())
         .filter(|call| !call.is_empty());
-    Ok(Json(state.store.create_event(&input).await?))
+    Ok(Json(
+        state
+            .store
+            .create_managed_event(&input, user.id, authority.is_administrator)
+            .await?,
+    ))
 }
 
 #[utoipa::path(patch, path = "/api/v1/events/{event_id}/status", tag = "management", params(("event_id" = Uuid, Path)), request_body = EventStatusInput, responses((status = 200, body = Event), (status = 404, description = "Event not found")))]
@@ -550,7 +620,13 @@ pub(crate) async fn set_event_status(
     jar: CookieJar,
     Json(input): Json<EventStatusInput>,
 ) -> HttpResult<Json<Event>> {
-    require_admin(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    let club_id = state
+        .store
+        .event_club_id(event_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    require_club_manager(&state, &user, club_id).await?;
     state
         .store
         .set_event_status(event_id, input.status)
@@ -566,9 +642,18 @@ pub(crate) async fn update_event(
     jar: CookieJar,
     Json(mut input): Json<EventUpdateInput>,
 ) -> HttpResult<Json<Event>> {
-    require_admin(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    let existing_club_id = state
+        .store
+        .event_club_id(event_id)
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    let authority = require_club_manager(&state, &user, existing_club_id).await?;
     if !state.store.club_exists(input.club_id).await? {
         return Err(HttpError::bad_request("unknown club"));
+    }
+    if input.club_id != existing_club_id {
+        require_club_manager(&state, &user, input.club_id).await?;
     }
     validate_event_identity(&input.name, input.special_callsign.as_deref())?;
     if input.ends_at <= input.starts_at {
@@ -595,7 +680,7 @@ pub(crate) async fn update_event(
     Ok(Json(
         state
             .store
-            .update_event(event_id, &input)
+            .update_managed_event(event_id, &input, user.id, authority.is_administrator)
             .await?
             .ok_or_else(HttpError::not_found)?,
     ))

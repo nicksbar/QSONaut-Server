@@ -125,8 +125,7 @@ async fn handle_message(
         ClientMessage::Hello { .. } => Ok(ServerMessage::Ack),
         ClientMessage::Sync => {
             require_scope(scopes, "events:read")?;
-            require_scope(scopes, "messages:read")?;
-            sync_snapshot(state, user).await
+            sync_snapshot(state, user, has_scope(scopes, "messages:read")).await
         }
         ClientMessage::Presence(input) => {
             require_scope(scopes, "presence:write")?;
@@ -194,7 +193,11 @@ async fn handle_message(
     }
 }
 
-async fn sync_snapshot(state: &AppState, user: &CurrentUser) -> Result<ServerMessage, String> {
+async fn sync_snapshot(
+    state: &AppState,
+    user: &CurrentUser,
+    include_messages: bool,
+) -> Result<ServerMessage, String> {
     let mut events = state
         .store
         .events()
@@ -205,16 +208,31 @@ async fn sync_snapshot(state: &AppState, user: &CurrentUser) -> Result<ServerMes
         .contest_templates()
         .await
         .map_err(|error| internal_error(&error))?;
-    let channel_messages = state
-        .store
-        .channel_messages(200)
-        .await
-        .map_err(|error| internal_error(&error))?;
+    let channel_messages = if include_messages {
+        state
+            .store
+            .channel_messages(200)
+            .await
+            .map_err(|error| internal_error(&error))?
+    } else {
+        Vec::new()
+    };
     let identities = state
         .store
         .managed_callsigns_for_user(user.id)
         .await
         .map_err(|error| internal_error(&error))?;
+    let mut clubs = state
+        .store
+        .clubs(user.id, false)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    clubs.retain(|club| club.my_role.is_some());
+    let club_ids = clubs
+        .iter()
+        .map(|club| club.id)
+        .collect::<std::collections::HashSet<_>>();
+    events.retain(|event| club_ids.contains(&event.club_id));
     let mut participants = Vec::new();
     for event in &events {
         participants.extend(
@@ -227,17 +245,6 @@ async fn sync_snapshot(state: &AppState, user: &CurrentUser) -> Result<ServerMes
                 .filter(|participant| participant.user_id == user.id),
         );
     }
-    let mut clubs = state
-        .store
-        .clubs(user.id, false)
-        .await
-        .map_err(|error| internal_error(&error))?;
-    clubs.retain(|club| club.my_role.is_some());
-    let club_ids = clubs
-        .iter()
-        .map(|club| club.id)
-        .collect::<std::collections::HashSet<_>>();
-    events.retain(|event| club_ids.contains(&event.club_id));
     let mut event_scores = Vec::with_capacity(events.len());
     for event in &events {
         event_scores.push(

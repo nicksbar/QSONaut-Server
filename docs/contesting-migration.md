@@ -16,6 +16,26 @@ Migration `0029_managed_callsign_audit.sql` records the authenticated actor and
 registration and lifecycle outcomes in an append-only callsign audit stream.
 The management API supports administrator approval/rejection and manager or
 administrator suspension/revocation of event-linked special callsigns.
+Migration `0030_contest_authorization_hardening.sql` revalidates current club
+membership, operating participant role, identity lifetime, optional station
+band/mode constraints, and all adjudication-sensitive QSO updates. It also
+normalizes meter and centimeter band names consistently and enforces audit-row
+immutability at the database boundary.
+Migration `0031_participant_assignment_validation.sql` rejects station band or
+mode assignments that are incompatible with the event's contest definition.
+Migration `0032_callsign_registry_synchronization.sql` keeps personal and club
+identities synchronized for users and clubs created after the initial seed and
+binds every event QSO's callsign text to its managed identity ID.
+Migration `0033_qso_managed_identity_validation.sql` validates optional managed
+identities on general QSOs, infers the authenticated user's personal identity
+when omitted, and prevents event-only or unauthorized club calls from being
+used outside their permitted context.
+Migration `0034_event_assignment_audit_and_locking.sql` adds immutable event
+station-assignment history and prevents club, schedule, special-call, or
+contest-rule changes after assignments or logs depend on the configuration.
+Event create/update operations synchronize special-call requests and their
+actor audit transactionally. Manager requests remain pending until an
+administrator approves them; administrator changes are verified immediately.
 The synchronized event snapshot also includes an aggregate score derived from
 accepted QSO rows; clients must continue treating individual receipts and this
 total as server-authoritative.
@@ -48,11 +68,11 @@ The desktop now includes captured operator/station/template/club context in its
 exchange metadata and uses the event captured on the QSO for historical uploads.
 This metadata is not an authorization source.
 
-This is a server-backed contest authorization and adjudication boundary, but
-the following remain follow-on work: management UI for identities and station
-assignments, immutable operator snapshots for historical audit, normalized
-distinct multiplier totals, complete contest formulas/bonus handling, and a
-database-wide duplicate transaction model spanning concurrent submissions.
+The web Events panel exposes special-identity status and event operator/station
+assignment creation and editing. Event QSO authorization takes an event row
+lock, serializing duplicate and multiplier adjudication for concurrent event
+submissions. More specialized contest formulas and bonus handling remain
+catalog-by-catalog work rather than an authorization limitation.
 Event client-submitted points are ignored; base points, duplicate decisions,
 multiplier awards, and the recorded scoring explanation are server-derived.
 

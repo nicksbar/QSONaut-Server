@@ -25,3 +25,17 @@
   authenticated actor and verification outcome.
 - Added audited special-callsign lifecycle actions for administrator approval or
   rejection and manager/administrator suspension or revocation.
+- Hardened contest authorization to re-check current membership, participant
+  role, identity validity, station band/mode assignments, and every sensitive
+  QSO update; corrected centimeter-band matching and made callsign audits
+  database-immutable.
+- Rejects event station band/mode assignments that conflict with the selected
+  contest definition before operators can select them.
+- Keeps newly created or renamed user/club callsigns synchronized with the
+  managed identity registry and rejects stale identity-text substitutions.
+- Validates managed identities on non-event logs and safely infers the
+  authenticated user's active personal identity when the client omits one.
+- Filters event discovery to active club access, synchronizes event special-call
+  requests transactionally, exposes assignment management in the web console,
+  records immutable actor-attributed assignment audits, and locks event
+  configuration once assignments or logs depend on it.

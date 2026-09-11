@@ -51,6 +51,7 @@
   let joinLookup = $state<AccessCallsignLookup | null>(null);
   const qsonautDesktopUrl = 'https://github.com/nicksbar/QSONaut';
   const qsonautServerUrl = 'https://github.com/nicksbar/QSONaut-Server';
+  let canManageEvents = $derived(user?.global_role === 'administrator' || clubs.some((club) => club.can_manage));
 
   async function refreshActivity() {
     if (activityRefreshInFlight || !user) return;
@@ -281,7 +282,7 @@
 {:else}
   <div class="shell">
     <header class="site-header"><a class="site-brand" href="https://qsonaut.com" aria-label="QSONaut home"><img src="/qsonaut-icon.png" alt="" /><span><strong>QSONaut</strong><small>AMATEUR RADIO MISSION CONTROL</small></span></a><div class="site-header-right"><nav class="site-links"><a href={qsonautDesktopUrl} target="_blank" rel="noreferrer">PROJECT</a><a href={qsonautServerUrl} target="_blank" rel="noreferrer">SERVER</a><a href="https://qsonaut.com" target="_blank" rel="noreferrer">QSONAUT.COM</a></nav><div class="operator"><i></i><div class="operator-menu-wrap"><button class="operator-trigger" aria-expanded={operatorMenuOpen} onclick={() => operatorMenuOpen = !operatorMenuOpen}><b>{user?.callsign}</b><span>⌄</span></button>{#if operatorMenuOpen}<div class="operator-menu"><button onclick={() => openTab('profile')}>PROFILE</button><button onclick={() => openTab('activity')}>MY LOGS / SHARING</button><button onclick={() => openTab('station')}>STATION LINK</button><button onclick={logout}>SIGN OUT</button></div>{/if}</div></div></div></header>
-    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity','station'] : ['overview','clubs','activity','station']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item === 'station' ? 'station link' : item === 'activity' ? 'my activity' : item}</button>{/each}</nav>
+    <nav>{#each (user?.global_role === 'administrator' ? ['overview','clubs','members','events','activity','station'] : canManageEvents ? ['overview','clubs','events','activity','station'] : ['overview','clubs','activity','station']) as item}<button class:active={tab === item} onclick={() => tab = item as Tab}>{item === 'station' ? 'station link' : item === 'activity' ? 'my activity' : item}</button>{/each}</nav>
     {#if error}<p class="error banner">{error}</p>{/if}
     <main>
       {#if tab === 'overview'}
@@ -299,7 +300,7 @@
           {#if profile?.hamdb_last_error}<p class="error">HamDB: {profile.hamdb_last_error}</p>{/if}<form class="compact" onsubmit={(event) => { event.preventDefault(); void savePassword(); }}><h3>Change password</h3><label>New password<input type="password" minlength="12" maxlength="256" bind:value={newPassword} required /></label><button class="danger" disabled={profileBusy}>CHANGE PASSWORD</button></form>{#if profileNotice}<p class="notice">{profileNotice}</p>{/if}<div class="profile-grid"><div><small>GLOBAL ACCESS</small><b>{user?.global_role}</b></div><div><small>HAMDB SYNC</small><b>{profile?.hamdb_fetched_at ? new Date(profile.hamdb_fetched_at).toLocaleString() : 'not synced'}</b></div><div><small>ACTIVITY DATA</small><b>summarized overall, by club, or by contest</b></div></div></section>
       {:else if tab === 'clubs'}<ClubsPanel {clubs} {capabilities} currentUser={user} refresh={load} />
       {:else if tab === 'members'}<MembersPanel {members} {clubs} {accessRequests} refresh={load} />
-      {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} refresh={load} />
+      {:else if tab === 'events'}<EventsPanel {events} {clubs} {templates} administrator={user?.global_role === 'administrator'} refresh={load} />
       {:else if tab === 'activity'}<ActivitySummaryPanel {clubs} {events} /><ActivityVisibilityPanel {clubs} {events} /><ActivityPanel administrator={user?.global_role === 'administrator'} {capabilities} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} />
       {:else}<StationLinkPanel currentUser={user} />{/if}
     </main>
