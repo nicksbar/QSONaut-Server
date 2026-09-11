@@ -905,6 +905,83 @@ mod tests {
         assert_eq!(invalid_summary.status(), 400);
     }
 
+    #[tokio::test]
+    async fn member_can_register_reissue_and_revoke_a_session_device() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping device lifecycle contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let user_id = Uuid::new_v4();
+        let callsign = format!("D{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "device-lifecycle-contract-password";
+        let hash = auth::hash_password(password.to_owned()).await.expect("hash password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Device member',$3,'member')")
+            .bind(user_id).bind(&callsign).bind(hash).execute(store.pool()).await
+            .expect("insert device test user");
+        let login = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#)))
+                .expect("login request")
+        ).await.expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login.headers().get("set-cookie").expect("session cookie")
+            .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+
+        let register = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/auth/device/session")
+                .header("content-type", "application/json").header("cookie", &cookie)
+                .body(Body::from(r#"{"device_name":"field laptop"}"#))
+                .expect("device registration request")
+        ).await.expect("device registration response");
+        assert_eq!(register.status(), 200);
+        let registered: DeviceToken = serde_json::from_slice(
+            &register.into_body().collect().await.expect("device body").to_bytes()
+        ).expect("device JSON");
+        assert!(!registered.token.is_empty());
+        assert!(registered.scopes.iter().any(|scope| scope == "logs:write"));
+
+        let devices_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/auth/devices").header("cookie", &cookie)
+                .body(Body::empty()).expect("devices request")
+        ).await.expect("devices response");
+        assert_eq!(devices_response.status(), 200);
+        let devices: Vec<DeviceTokenRecord> = serde_json::from_slice(
+            &devices_response.into_body().collect().await.expect("devices body").to_bytes()
+        ).expect("devices JSON");
+        let device = devices.iter().find(|device| device.device_name == "field laptop").expect("registered device");
+        let device_id = device.id;
+
+        let reissue = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST")
+                .uri(format!("/api/v1/auth/devices/{device_id}/reissue"))
+                .header("cookie", &cookie).body(Body::empty()).expect("reissue request")
+        ).await.expect("reissue response");
+        assert_eq!(reissue.status(), 200);
+        let replacement: DeviceToken = serde_json::from_slice(
+            &reissue.into_body().collect().await.expect("replacement body").to_bytes()
+        ).expect("replacement JSON");
+        assert_ne!(replacement.token, registered.token);
+
+        let remaining_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/auth/devices").header("cookie", &cookie)
+                .body(Body::empty()).expect("remaining devices request")
+        ).await.expect("remaining devices response");
+        let remaining: Vec<DeviceTokenRecord> = serde_json::from_slice(
+            &remaining_response.into_body().collect().await.expect("remaining devices body").to_bytes()
+        ).expect("remaining devices JSON");
+        let replacement_id = remaining.iter().find(|device| device.device_name == "field laptop").expect("replacement device").id;
+        assert_ne!(replacement_id, device_id);
+
+        let revoke = router_with_store(store, false).oneshot(
+            Request::builder().method("DELETE")
+                .uri(format!("/api/v1/auth/devices/{replacement_id}"))
+                .header("cookie", cookie).body(Body::empty()).expect("revoke request")
+        ).await.expect("revoke response");
+        assert_eq!(revoke.status(), 204);
+    }
+
     #[test]
     fn openapi_covers_management_and_authentication_routes() {
         let document = ApiDoc::openapi();
