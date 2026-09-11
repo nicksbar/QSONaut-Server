@@ -1,5 +1,8 @@
 use chrono::{Duration, Utc};
-use qsonaut_protocol::{ActivityVisibilityInput, DiagnosticReportInput, QsoLogInput, StationPresenceInput};
+use qsonaut_protocol::{
+    ActivityVisibilityInput, ClubInput, ClubMembershipInput, DiagnosticReportInput, QsoLogInput,
+    StationPresenceInput,
+};
 use qsonaut_store::{NewAccessRequest, Store};
 use uuid::Uuid;
 
@@ -28,6 +31,56 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .execute(store.pool())
         .await
         .expect("insert other test user");
+
+    let club_suffix = &user_id.simple().to_string()[..8];
+    let club = store
+        .create_club(
+            &ClubInput {
+                name: format!("Contract Club {club_suffix}"),
+                callsign: Some(format!("N{}", &user_id.simple().to_string()[..6]).to_ascii_uppercase()),
+                description: "membership contract".to_owned(),
+            },
+            user_id,
+        )
+        .await
+        .expect("create contract club");
+    let request = store
+        .request_club_join(club.id, other_user_id)
+        .await
+        .expect("request club membership");
+    assert_eq!(request.status, "pending");
+    let approved = store
+        .review_club_join_request(club.id, request.id, user_id, "approved", "operator")
+        .await
+        .expect("review club membership")
+        .expect("pending membership request");
+    assert_eq!(approved.status, "approved");
+    assert!(store.active_club_member(other_user_id, club.id).await.unwrap());
+    let membership = store
+        .set_club_member(
+            club.id,
+            other_user_id,
+            &ClubMembershipInput {
+                user_id: other_user_id,
+                role: "operator".to_owned(),
+                membership_status: Some("lapsed".to_owned()),
+                dues_status: Some("overdue".to_owned()),
+                membership_number: Some("42".to_owned()),
+                renewal_due_on: None,
+            },
+        )
+        .await
+        .expect("lapse club membership");
+    assert_eq!(membership.membership_status, "lapsed");
+    assert!(!store.active_club_member(other_user_id, club.id).await.unwrap());
+    let other_clubs = store.clubs(other_user_id, false).await.expect("load member organizations");
+    let other_club = other_clubs.iter().find(|item| item.id == club.id).expect("club remains discoverable");
+    assert_eq!(other_club.my_role.as_deref(), Some("operator"));
+    assert_eq!(other_club.my_membership_status.as_deref(), Some("lapsed"));
+    let owner_clubs = store.clubs(user_id, false).await.expect("load owner organizations");
+    let owner_club = owner_clubs.iter().find(|item| item.id == club.id).expect("owner club exists");
+    assert_eq!(owner_club.my_role.as_deref(), Some("owner"));
+    assert_eq!(owner_club.my_membership_status.as_deref(), Some("active"));
 
     let diagnostic = DiagnosticReportInput {
         instance_id: Uuid::new_v4(),
@@ -135,6 +188,39 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .await
         .expect("retry QSO log");
     assert_eq!(retried_log.id, first_log.id);
+    let other_log = QsoLogInput {
+        idempotency_key: Uuid::new_v4(),
+        callsign: "K1ABC".to_owned(),
+        ..log.clone()
+    };
+    store
+        .create_qso_log(other_user_id, &other_log)
+        .await
+        .expect("insert other private log");
+    store
+        .set_activity_visibility(
+            other_user_id,
+            &ActivityVisibilityInput {
+                scope: "overall".to_owned(),
+                scope_id: None,
+                visibility: "global".to_owned(),
+            },
+        )
+        .await
+        .expect("make other log globally visible");
+    let visible_logs = store
+        .qso_logs_for_viewer(user_id, false, 100)
+        .await
+        .expect("load viewer logs");
+    assert!(visible_logs.iter().any(|item| item.user_id == user_id));
+    assert!(visible_logs.iter().any(|item| item.user_id == other_user_id));
+    let summary = store
+        .activity_summary(user_id, "overall", None, 0)
+        .await
+        .expect("summarize user activity");
+    assert_eq!(summary.qso_count, 1);
+    assert_eq!(summary.points, 1);
+    assert_eq!(summary.status, "active");
 
     verify_access_approval(&store, user_id).await;
 }

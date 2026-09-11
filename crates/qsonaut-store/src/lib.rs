@@ -1089,7 +1089,7 @@ impl Store {
 
     pub async fn clubs(&self, viewer_id: Uuid, is_admin: bool) -> Result<Vec<Club>, sqlx::Error> {
         sqlx::query_as::<_, (Uuid, String, Option<String>, String, i64, i64, Option<String>, Option<String>, Option<String>, bool)>(
-            "SELECT c.id,c.name,c.callsign,c.description,count(cm.user_id),count(cm.user_id) FILTER (WHERE cm.membership_status='active' AND (cm.dues_status IN ('due','overdue') OR cm.renewal_due_on <= current_date + 30)),mine.role,mine.membership_status,(SELECT status FROM club_join_requests r WHERE r.club_id=c.id AND r.user_id=$1 ORDER BY requested_at DESC LIMIT 1),($2 OR (mine.role IN ('owner','coordinator') AND mine.membership_status='active')) FROM clubs c LEFT JOIN club_members cm ON cm.club_id=c.id LEFT JOIN club_members mine ON mine.club_id=c.id AND mine.user_id=$1 GROUP BY c.id,mine.role,mine.membership_status ORDER BY c.name",
+            "SELECT c.id,c.name,c.callsign,c.description,count(cm.user_id),count(cm.user_id) FILTER (WHERE cm.membership_status='active' AND (cm.dues_status IN ('due','overdue') OR cm.renewal_due_on <= current_date + 30)),mine.role,mine.membership_status,(SELECT status FROM club_join_requests r WHERE r.club_id=c.id AND r.user_id=$1 ORDER BY requested_at DESC LIMIT 1),COALESCE($2 OR (mine.role IN ('owner','coordinator') AND mine.membership_status='active'), false) FROM clubs c LEFT JOIN club_members cm ON cm.club_id=c.id LEFT JOIN club_members mine ON mine.club_id=c.id AND mine.user_id=$1 GROUP BY c.id,mine.role,mine.membership_status ORDER BY c.name",
         )
         .bind(viewer_id)
         .bind(is_admin)
