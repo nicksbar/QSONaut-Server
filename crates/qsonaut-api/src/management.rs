@@ -15,7 +15,7 @@ use axum_extra::extract::cookie::CookieJar;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, Utc};
 use qsonaut_protocol::{
-    ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club, ClubInput,
+    ActivityMapPoint, ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club, ClubInput,
     ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
     CurrentUser, DiagnosticReport, Event, EventInput, EventParticipant, EventParticipantInput,
     EventScore, EventStatusInput, EventUpdateInput, ManagedCallsign, ManagedCallsignInput,
@@ -803,6 +803,70 @@ pub(crate) async fn activity_summary(
         state
             .store
             .activity_summary(user.id, &query.scope, query.scope_id, query.period_days)
+            .await?,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub(crate) struct ActivityMapQuery {
+    #[serde(default = "default_summary_scope")]
+    pub scope: String,
+    pub scope_id: Option<Uuid>,
+    pub callsign_id: Option<Uuid>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/activity/map",
+    tag = "activity",
+    params(ActivityMapQuery),
+    responses((status = 200, body = [ActivityMapPoint]), (status = 400), (status = 403))
+)]
+pub(crate) async fn activity_map(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<ActivityMapQuery>,
+) -> HttpResult<Json<Vec<ActivityMapPoint>>> {
+    let user = require_user(&state, &jar).await?;
+    if !["overall", "club"].contains(&query.scope.as_str()) {
+        return Err(HttpError::bad_request("map scope must be overall or club"));
+    }
+    if query.scope == "overall" && query.scope_id.is_some() {
+        return Err(HttpError::bad_request("overall map scope cannot have a target"));
+    }
+    let callsign_filter = if let Some(callsign_id) = query.callsign_id {
+        if query.scope != "overall" {
+            return Err(HttpError::bad_request("callsign filtering is only available for your own map"));
+        }
+        let callsign = state
+            .store
+            .managed_callsign(callsign_id)
+            .await?
+            .ok_or_else(HttpError::not_found)?;
+        if callsign.owner_user_id != Some(user.id) {
+            return Err(HttpError::forbidden());
+        }
+        Some(callsign.callsign)
+    } else {
+        None
+    };
+    if query.scope == "club" {
+        let club_id = query.scope_id.ok_or_else(|| HttpError::bad_request("club map scope requires a club"))?;
+        if user.global_role != "administrator" && !state.store.active_club_member(user.id, club_id).await? {
+            return Err(HttpError::forbidden());
+        }
+    }
+    Ok(Json(
+        state
+            .store
+            .activity_map_points(
+                user.id,
+                user.global_role == "administrator",
+                &query.scope,
+                query.scope_id,
+                query.callsign_id,
+                callsign_filter.as_deref(),
+            )
             .await?,
     ))
 }

@@ -36,13 +36,21 @@ board management, officer assignments, elections, or voting cycles. Historical
 migrations are immutable database history; new hosted deployments apply the
 governance schema from the private companion.
 
-## QSO map feature request
+## Community QSO map
 
-The public edition should provide a deliberately basic QSO map. It should show
-activity for each callsign owned by the authenticated operator and club
-activity for all participants in that club's events, subject to the existing
-activity visibility rules. Public scope means useful geographic context and
-simple filtering, not a full analytics or social-map product.
+The public edition provides a deliberately basic QSO map at
+`/api/v1/activity/map`. It shows the authenticated operator's activity as an
+aggregate or for one owned callsign, or activity for an active club's events,
+subject to the existing activity
+visibility rules. It aggregates valid four- or six-character Maidenhead grids
+from submitted QSO exchanges (`grid`, `grid_square`, or `gridsquare`) and
+places each marker at the grid-square centre. It does not geocode callsigns,
+read profile coordinates, or expose a precise operator location. The web
+console includes this map in Sharing Center, with an operator scope and an
+active-club scope.
+
+Public scope means useful geographic context and simple filtering, not a full
+analytics or social-map product.
 
 The hosted edition may provide a substantially enhanced map as a separate
 product capability. Candidate enhancements include richer time playback,

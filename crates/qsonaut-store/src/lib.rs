@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use qsonaut_protocol::{
-    AccessRequest, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
+    AccessRequest, ActivityMapPoint, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
     ChannelMessageInput, Club, ClubInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
     ContestTemplate, CurrentUser, DiagnosticReport, DiagnosticReportInput, Event, EventInput,
     EventParticipant, EventParticipantInput, EventScore, EventStatus, EventUpdateInput,
@@ -12,6 +12,7 @@ use qsonaut_protocol::{
 };
 use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 fn should_preserve_last_administrator(
@@ -19,6 +20,46 @@ fn should_preserve_last_administrator(
     target_is_administrator: bool,
 ) -> bool {
     target_is_administrator && administrator_count <= 1
+}
+
+fn maidenhead_center(grid: &str) -> Option<(String, f64, f64)> {
+    let normalized = grid.trim().to_ascii_uppercase();
+    let bytes = normalized.as_bytes();
+    if !(bytes.len() == 4 || bytes.len() == 6)
+        || !(b'A'..=b'R').contains(&bytes[0])
+        || !(b'A'..=b'R').contains(&bytes[1])
+        || !bytes[2].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+        || (bytes.len() == 6 && (!(b'A'..=b'X').contains(&bytes[4]) || !(b'A'..=b'X').contains(&bytes[5])))
+    {
+        return None;
+    }
+    let mut longitude = -180.0 + f64::from(bytes[0] - b'A') * 20.0 + f64::from(bytes[2] - b'0') * 2.0;
+    let mut latitude = -90.0 + f64::from(bytes[1] - b'A') * 10.0 + f64::from(bytes[3] - b'0');
+    let (width, height) = if bytes.len() == 6 {
+        longitude += f64::from(bytes[4] - b'A') * (5.0 / 60.0);
+        latitude += f64::from(bytes[5] - b'A') * (2.5 / 60.0);
+        (5.0 / 60.0, 2.5 / 60.0)
+    } else {
+        (2.0, 1.0)
+    };
+    Some((normalized, latitude + height / 2.0, longitude + width / 2.0))
+}
+
+fn grid_from_exchange(exchange: &Value) -> Option<&str> {
+    const GRID_KEYS: [&str; 3] = ["grid", "grid_square", "gridsquare"];
+    GRID_KEYS
+        .into_iter()
+        .find_map(|key| exchange.get(key).and_then(Value::as_str))
+        .or_else(|| {
+            ["fields_received", "fields_sent"]
+                .into_iter()
+                .find_map(|section| {
+                    exchange
+                        .get(section)
+                        .and_then(|fields| GRID_KEYS.into_iter().find_map(|key| fields.get(key).and_then(Value::as_str)))
+                })
+        })
 }
 
 #[derive(sqlx::FromRow)]
@@ -1661,6 +1702,66 @@ impl Store {
             .map(|rows| rows.into_iter().map(QsoLog::from).collect())
     }
 
+    pub async fn activity_map_points(
+        &self,
+        viewer_id: Uuid,
+        is_administrator: bool,
+        scope: &str,
+        scope_id: Option<Uuid>,
+        callsign_id: Option<Uuid>,
+        operating_callsign: Option<&str>,
+    ) -> Result<Vec<ActivityMapPoint>, sqlx::Error> {
+        let mut logs = self.qso_logs_for_viewer(viewer_id, is_administrator, 1_000).await?;
+        match scope {
+            "overall" => logs.retain(|log| {
+                log.user_id == viewer_id
+                    && operating_callsign.is_none_or(|callsign| {
+                        callsign_id.is_some_and(|id| log.callsign_id == Some(id))
+                            || log
+                                .operating_callsign
+                                .as_deref()
+                                .is_some_and(|value| value.eq_ignore_ascii_case(callsign))
+                            || log.operator_callsign.eq_ignore_ascii_case(callsign)
+                    })
+            }),
+            "club" => {
+                let club_id = scope_id.expect("club scope is validated by the API");
+                let event_ids = self
+                    .events()
+                    .await?
+                    .into_iter()
+                    .filter(|event| event.club_id == club_id)
+                    .map(|event| event.id)
+                    .collect::<std::collections::HashSet<_>>();
+                logs.retain(|log| log.event_id.is_some_and(|event_id| event_ids.contains(&event_id)));
+            }
+            _ => unreachable!("map scope is validated by the API"),
+        }
+        let mut points = HashMap::<String, ActivityMapPoint>::new();
+        for log in logs {
+            let grid = grid_from_exchange(&log.exchange);
+            let Some(grid) = grid.and_then(maidenhead_center) else {
+                continue;
+            };
+            points
+                .entry(grid.0.clone())
+                .and_modify(|point| {
+                    point.qso_count += 1;
+                    point.last_qso_at = point.last_qso_at.max(log.occurred_at);
+                })
+                .or_insert(ActivityMapPoint {
+                    grid: grid.0,
+                    latitude: grid.1,
+                    longitude: grid.2,
+                    qso_count: 1,
+                    last_qso_at: log.occurred_at,
+                });
+        }
+        let mut points = points.into_values().collect::<Vec<_>>();
+        points.sort_by(|left, right| right.qso_count.cmp(&left.qso_count).then_with(|| right.last_qso_at.cmp(&left.last_qso_at)));
+        Ok(points)
+    }
+
     pub async fn create_qso_log(
         &self,
         user_id: Uuid,
@@ -1833,12 +1934,24 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::should_preserve_last_administrator;
+    use super::{grid_from_exchange, maidenhead_center, should_preserve_last_administrator};
 
     #[test]
     fn protects_the_last_administrator_only_when_downgrading_one() {
         assert!(should_preserve_last_administrator(1, true));
         assert!(!should_preserve_last_administrator(2, true));
         assert!(!should_preserve_last_administrator(1, false));
+    }
+
+    #[test]
+    fn maidenhead_grid_centres_are_validated_and_stable() {
+        let (grid, latitude, longitude) = maidenhead_center("cn87").expect("valid four-character grid");
+        assert_eq!(grid, "CN87");
+        assert!((latitude - 47.5).abs() < f64::EPSILON);
+        assert!((longitude + 123.0).abs() < f64::EPSILON);
+        assert!(maidenhead_center("CN87XX").is_some());
+        assert!(maidenhead_center("not-a-grid").is_none());
+        assert!(maidenhead_center("CN8").is_none());
+        assert_eq!(grid_from_exchange(&serde_json::json!({"fields_received":{"grid":"FN42"}})), Some("FN42"));
     }
 }

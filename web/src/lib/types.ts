@@ -86,6 +86,14 @@ export type ActivityVisibility = {
   updated_at: string;
 };
 
+export type ActivityMapPoint = {
+  grid: string;
+  latitude: number;
+  longitude: number;
+  qso_count: number;
+  last_qso_at: string;
+};
+
 export type ShareLinkRecord = {
   id: string;
   qso_log_id: string;

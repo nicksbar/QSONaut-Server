@@ -213,6 +213,18 @@ pub struct ActivityVisibilityInput {
     pub visibility: String,
 }
 
+/// A privacy-safe aggregate of QSOs whose exchange included a valid
+/// Maidenhead grid square. Coordinates represent the grid-square centre, not
+/// an operator's precise profile location.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ActivityMapPoint {
+    pub grid: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub qso_count: i64,
+    pub last_qso_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceCredentials {
     pub callsign: String,

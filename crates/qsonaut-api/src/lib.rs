@@ -12,7 +12,7 @@ use axum::{
 };
 use qsonaut_protocol::{
     API_VERSION, AccessCallsignLookup, AccessChallenge, AccessDecisionResult, AccessRequest,
-    AccessRequestDecisionInput, AccessRequestInput, ActivitySummary, ActivityVisibility,
+    AccessRequestDecisionInput, AccessRequestInput, ActivityMapPoint, ActivitySummary, ActivityVisibility,
     ActivityVisibilityInput, ApiError, BootstrapRequest, ChannelMessage, Club, ClubInput,
     ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
     Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
@@ -42,7 +42,7 @@ use utoipa::OpenApi;
         management::events, management::create_event, management::update_event, management::set_event_status,
         management::event_participants, management::create_event_participant, management::update_event_participant, management::event_score,
         management::stations, management::publish_station_presence, management::channel_messages,
-        management::logs, management::collect_log, management::diagnostics, management::export_diagnostics, management::purge_retained_artifacts, management::activity_summary, management::activity_visibility, management::set_activity_visibility,
+        management::logs, management::collect_log, management::diagnostics, management::export_diagnostics, management::purge_retained_artifacts, management::activity_summary, management::activity_map, management::activity_visibility, management::set_activity_visibility,
         management::create_log_share, management::shared_log, management::revoke_log_share, management::log_shares
     ),
     components(schemas(
@@ -55,7 +55,7 @@ use utoipa::OpenApi;
         ShareLink, SharedQsoDetail,
         Club, ClubInput, ContestTemplate, EventStatus, Event, EventInput, EventUpdateInput, EventStatusInput, ChannelMessage,
         ManagedCallsign, ManagedCallsignInput, ManagedCallsignStatusInput, EventParticipant, EventParticipantInput, EventScore,
-        StationPresence, StationPresenceInput, QsoLog, QsoLogInput, DiagnosticReport, DiagnosticReportInput
+        StationPresence, StationPresenceInput, QsoLog, QsoLogInput, DiagnosticReport, DiagnosticReportInput, ActivityMapPoint
     )),
     tags(
         (name = "service", description = "Service discovery and readiness"),
@@ -302,6 +302,7 @@ pub fn router_with_store_and_policy(
             "/api/v1/activity/summary",
             get(management::activity_summary),
         )
+        .route("/api/v1/activity/map", get(management::activity_map))
         .route(
             "/api/v1/logs/{log_id}/share",
             post(management::create_log_share),
@@ -845,7 +846,7 @@ mod tests {
         let log_response = router_with_store(store.clone(), false).oneshot(
             Request::builder().method("POST").uri("/api/v1/logs")
                 .header("content-type", "application/json").header("cookie", &cookie)
-                .body(Body::from(format!(r#"{{"idempotency_key":"{idempotency_key}","callsign":"k1abc","band":"20m","mode":"FT8","occurred_at":"{}","exchange":{{"section":"OR"}},"source":"api-contract"}}"#, occurred_at.to_rfc3339())))
+                .body(Body::from(format!(r#"{{"idempotency_key":"{idempotency_key}","callsign":"k1abc","band":"20m","mode":"FT8","occurred_at":"{}","exchange":{{"section":"OR","grid":"cn87"}},"source":"api-contract"}}"#, occurred_at.to_rfc3339())))
                 .expect("log request")
         ).await.expect("log response");
         assert_eq!(log_response.status(), 200);
@@ -897,6 +898,49 @@ mod tests {
             &summary_response.into_body().collect().await.expect("summary body").to_bytes()
         ).expect("summary JSON");
         assert_eq!(summary.qso_count, 1);
+
+        let identity_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM managed_callsigns WHERE owner_user_id=$1 AND callsign=$2",
+        )
+        .bind(user_id)
+        .bind(&callsign)
+        .fetch_one(store.pool())
+        .await
+        .expect("provisioned personal callsign");
+        sqlx::query("UPDATE qso_logs SET callsign_id=$1 WHERE id=$2")
+            .bind(identity_id).bind(log.id).execute(store.pool()).await
+            .expect("associate log with callsign");
+
+        let map_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/activity/map?scope=overall")
+                .header("cookie", &cookie).body(Body::empty()).expect("map request")
+        ).await.expect("map response");
+        assert_eq!(map_response.status(), 200);
+        let points: Vec<ActivityMapPoint> = serde_json::from_slice(
+            &map_response.into_body().collect().await.expect("map body").to_bytes()
+        ).expect("map JSON");
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].grid, "CN87");
+        assert_eq!(points[0].qso_count, 1);
+        assert!((points[0].latitude - 47.5).abs() < f64::EPSILON);
+        assert!((points[0].longitude + 123.0).abs() < f64::EPSILON);
+
+        let callsign_map_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri(format!("/api/v1/activity/map?scope=overall&callsign_id={identity_id}"))
+                .header("cookie", &cookie).body(Body::empty()).expect("callsign map request")
+        ).await.expect("callsign map response");
+        assert_eq!(callsign_map_response.status(), 200);
+        let callsign_points: Vec<ActivityMapPoint> = serde_json::from_slice(
+            &callsign_map_response.into_body().collect().await.expect("callsign map body").to_bytes()
+        ).expect("callsign map JSON");
+        assert_eq!(callsign_points.len(), 1);
+        assert_eq!(callsign_points[0].grid, "CN87");
+
+        let invalid_map = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/activity/map?scope=invalid")
+                .header("cookie", &cookie).body(Body::empty()).expect("invalid map request")
+        ).await.expect("invalid map response");
+        assert_eq!(invalid_map.status(), 400);
 
         let invalid_summary = router_with_store(store, false).oneshot(
             Request::builder().uri("/api/v1/activity/summary?scope=invalid")
@@ -1019,6 +1063,7 @@ mod tests {
             "/api/v1/shares",
             "/api/v1/shares/{share_id}",
             "/api/v1/activity/summary",
+            "/api/v1/activity/map",
             "/api/v1/activity/visibility",
             "/api/v1/diagnostics",
             "/api/v1/diagnostics/export",

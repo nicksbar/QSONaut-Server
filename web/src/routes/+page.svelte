@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ActivityPanel from '$lib/ActivityPanel.svelte';
+  import ActivityMapPanel from '$lib/ActivityMapPanel.svelte';
   import ActivitySummaryPanel from '$lib/ActivitySummaryPanel.svelte';
   import ActivityVisibilityPanel from '$lib/ActivityVisibilityPanel.svelte';
   import ClubsPanel from '$lib/ClubsPanel.svelte';
@@ -366,7 +367,7 @@
       {:else if tab === 'clubs'}<ClubsPanel {clubs} {capabilities} currentUser={user} refresh={load} />
       {:else if tab === 'events'}<EventsPanel events={scopedEvents} clubs={activeMemberships} {templates} administrator={user?.global_role === 'administrator'} refresh={load} />
       {:else if tab === 'identities'}<IdentityPanel identities={workspaceIdentities} clubs={activeMemberships} events={workspaceEvents} />
-      {:else if tab === 'activity'}<section class="sharing-workspace"><div class="admin-intro"><p class="eyebrow amber">MY DATA / SHARING</p><h1>Sharing center</h1><p>Control what activity you share and review the QSO and hardware-validation submissions you have sent to this server.</p></div><ActivityVisibilityPanel clubs={activeMemberships} events={workspaceEvents} /><ActivityPanel administrator={false} {capabilities} {stations} logs={myLogs} {messages} {diagnostics} refresh={refreshActivity} /></section>
+      {:else if tab === 'activity'}<section class="sharing-workspace"><div class="admin-intro"><p class="eyebrow amber">MY DATA / SHARING</p><h1>Sharing center</h1><p>Control what activity you share and review the QSO and hardware-validation submissions you have sent to this server.</p></div><ActivityMapPanel clubs={activeMemberships} identities={workspaceIdentities.filter((identity) => identity.owner_user_id === user?.id)} /><ActivityVisibilityPanel clubs={activeMemberships} events={workspaceEvents} /><ActivityPanel administrator={false} {capabilities} {stations} logs={myLogs} {messages} {diagnostics} refresh={refreshActivity} /></section>
       {:else if tab === 'admin' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / ACCOUNTS</p><h1>Accounts &amp; access</h1><p>Review access requests, operator accounts, and account recovery. Organization repair and identity review are separate administrator workspaces.</p></div><MembersPanel {members} {clubs} {accessRequests} refresh={load} /></section>
       {:else if tab === 'admin-operations' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / ORGANIZATIONS</p><h1>Organization repair</h1><p>Resolve cross-organization operation, contest, roster, and assignment issues without mixing them with account or identity administration.</p></div><EventsPanel {events} {clubs} {templates} administrator={true} refresh={load} /></section>
       {:else if tab === 'admin-identities' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / IDENTITIES</p><h1>Identity review</h1><p>Review global callsign records and their organization or event authority separately from operator accounts and contest operations.</p></div><IdentityPanel {identities} {clubs} {events} /></section>
