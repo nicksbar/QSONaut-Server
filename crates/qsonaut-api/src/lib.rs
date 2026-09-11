@@ -618,6 +618,47 @@ mod tests {
         assert!(events.iter().all(|event| event.club_id == member_club.id));
     }
 
+    #[tokio::test]
+    async fn member_cannot_access_global_administrator_routes() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping administrator boundary contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let user_id = Uuid::new_v4();
+        let callsign = format!("G{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "administrator-boundary-contract-password";
+        let hash = auth::hash_password(password.to_owned()).await.expect("hash password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Boundary member',$3,'member')")
+            .bind(user_id).bind(&callsign).bind(hash).execute(store.pool()).await
+            .expect("insert boundary test user");
+        let login = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#)))
+                .expect("login request")
+        ).await.expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login.headers().get("set-cookie").expect("session cookie")
+            .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+
+        for (method, path) in [
+            ("GET", "/api/v1/members"),
+            ("GET", "/api/v1/diagnostics/export"),
+            ("POST", "/api/v1/diagnostics/retention/purge"),
+        ] {
+            let response = router_with_store(store.clone(), false).oneshot(
+                Request::builder().method(method).uri(path).header("cookie", &cookie)
+                    .body(Body::empty()).expect("administrator route request")
+            ).await.expect("administrator route response");
+            assert_eq!(response.status(), 403, "member could access {path}");
+        }
+        let unauthenticated = router_with_store(store, false).oneshot(
+            Request::builder().uri("/api/v1/stations").body(Body::empty()).expect("unauthenticated request")
+        ).await.expect("unauthenticated response");
+        assert_eq!(unauthenticated.status(), 401);
+    }
+
     #[test]
     fn openapi_covers_management_and_authentication_routes() {
         let document = ApiDoc::openapi();
