@@ -35,3 +35,18 @@ The public repository contains no governance API, persistence types, or UI for
 board management, officer assignments, elections, or voting cycles. Historical
 migrations are immutable database history; new hosted deployments apply the
 governance schema from the private companion.
+
+## QSO map feature request
+
+The public edition should provide a deliberately basic QSO map. It should show
+activity for each callsign owned by the authenticated operator and club
+activity for all participants in that club's events, subject to the existing
+activity visibility rules. Public scope means useful geographic context and
+simple filtering, not a full analytics or social-map product.
+
+The hosted edition may provide a substantially enhanced map as a separate
+product capability. Candidate enhancements include richer time playback,
+organization dashboards, aggregation and privacy controls, contest overlays,
+geospatial clustering, exports, and policy-aware sharing. These are discovery
+items only; hosted work must not weaken public visibility defaults or expose
+private operator location data.

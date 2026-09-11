@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use qsonaut_protocol::{ActivityVisibilityInput, QsoLogInput};
+use qsonaut_protocol::{ActivityVisibilityInput, DiagnosticReportInput, QsoLogInput, StationPresenceInput};
 use qsonaut_store::{NewAccessRequest, Store};
 use uuid::Uuid;
 
@@ -20,6 +20,55 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .execute(store.pool())
         .await
         .expect("insert test user");
+    let other_user_id = Uuid::new_v4();
+    let other_callsign = format!("T{}", &other_user_id.simple().to_string()[..8]).to_ascii_uppercase();
+    sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Other migration test','unused','member')")
+        .bind(other_user_id)
+        .bind(other_callsign)
+        .execute(store.pool())
+        .await
+        .expect("insert other test user");
+
+    let diagnostic = DiagnosticReportInput {
+        instance_id: Uuid::new_v4(),
+        category: "hardware".to_owned(),
+        summary: "operator validation".to_owned(),
+        payload: serde_json::json!({"audio": "ok"}),
+    };
+    store
+        .create_diagnostic_report(user_id, &diagnostic)
+        .await
+        .expect("create user diagnostic");
+    store
+        .create_diagnostic_report(other_user_id, &diagnostic)
+        .await
+        .expect("create other diagnostic");
+    let own_diagnostics = store
+        .diagnostic_reports_for_user(user_id, 100)
+        .await
+        .expect("load user diagnostics");
+    assert_eq!(own_diagnostics.len(), 1);
+    assert_eq!(own_diagnostics[0].user_id, user_id);
+
+    let station = StationPresenceInput {
+        instance_id: Uuid::new_v4(),
+        station_label: "Contract station".to_owned(),
+        radio_manufacturer: Some("Test".to_owned()),
+        radio_model: Some("Radio".to_owned()),
+        frequency_hz: Some(14_074_000),
+        band: Some("20m".to_owned()),
+        mode: Some("FT8".to_owned()),
+        qsonaut_version: "test".to_owned(),
+        platform: "linux".to_owned(),
+        status: "online".to_owned(),
+        metadata: serde_json::json!({}),
+    };
+    store
+        .upsert_station_presence(user_id, &station)
+        .await
+        .expect("create user station");
+    assert_eq!(store.station_presence(Some(user_id)).await.unwrap().len(), 1);
+    assert_eq!(store.station_presence(Some(other_user_id)).await.unwrap().len(), 0);
 
     let challenge_id = Uuid::new_v4();
     store
