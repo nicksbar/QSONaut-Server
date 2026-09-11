@@ -3,6 +3,7 @@
 mod access;
 mod auth;
 mod error;
+mod log_validation;
 mod management;
 mod realtime;
 

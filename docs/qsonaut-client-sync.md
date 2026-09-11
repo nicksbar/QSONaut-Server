@@ -12,6 +12,14 @@ Presence is a last-known coordination snapshot. It grants no server authority ov
 
 An authenticated QSONaut client may submit an idempotent record to `POST /api/v1/logs`. Each record has a client-generated UUID, operator identity from the authenticated session, optional event, callsign, band, mode, optional frequency/RST/exchange fields, timestamp, points, and source.
 
+The same `QsoLogInput` contract is used by the WebSocket `log` message. The
+top-level shape is closed: unknown fields are rejected, contact callsigns,
+band, mode, source, timestamps, and exchange structure are validated before
+storage, and event records must carry both `operating_callsign` and
+`callsign_id`. Contest `fields_sent` and `fields_received` keys are canonical
+lowercase catalog keys; the server normalizes legacy casing before applying
+the authoritative contest definition and PostgreSQL event checks.
+
 The server treats a repeated idempotency key from the same authenticated operator as a retry and returns the already-stored record without creating a duplicate. The management UI is intentionally read-only for QSO activity: operating and correction workflows remain in QSONaut until conflict-resolution and audit semantics are designed.
 
 The management UI presents activity at the operator level: overall, for a
@@ -90,7 +98,7 @@ recent 200 messages alongside station presence and collected logs.
 
 ## WebSocket transport
 
-QSONaut connects to `GET /api/v1/ws` using the `qsonaut.v1` subprotocol and an
+QSONaut connects to the exact path `GET /api/v1/ws` using the `qsonaut.v1` subprotocol and an
 `Authorization: Bearer ...` header. Messages use versioned JSON envelopes with
 client-generated event UUIDs. The current message set provides event/catalog
 snapshots, presence publication, idempotent QSO submission, shared-channel

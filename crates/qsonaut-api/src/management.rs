@@ -5,6 +5,7 @@ use crate::{
         validate_display_name, validate_identity, validate_password,
     },
     error::{HttpError, HttpResult},
+    log_validation::{canonicalize_contest_exchange, validate_log},
 };
 use axum::{
     Json,
@@ -1005,28 +1006,11 @@ pub(crate) async fn channel_messages(
 pub(crate) async fn collect_log(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(input): Json<QsoLogInput>,
+    Json(mut input): Json<QsoLogInput>,
 ) -> HttpResult<Json<QsoLog>> {
     let user = require_user(&state, &jar).await?;
-    validate_callsign(&input.callsign)?;
-    if input.band.trim().is_empty() || input.mode.trim().is_empty() {
-        return Err(HttpError::bad_request(
-            "callsign, band, and mode are required",
-        ));
-    }
-    if input.frequency_hz.is_some_and(|frequency| frequency < 0) {
-        return Err(HttpError::bad_request("frequency cannot be negative"));
-    }
-    if !input.exchange.is_object() || input.exchange.to_string().len() > 8_192 {
-        return Err(HttpError::bad_request(
-            "exchange must be an object no larger than 8 KiB",
-        ));
-    }
-    if input.source.trim().is_empty() || input.source.len() > 40 {
-        return Err(HttpError::bad_request(
-            "log source must contain 1 to 40 characters",
-        ));
-    }
+    validate_log(&input).map_err(HttpError::bad_request)?;
+    canonicalize_contest_exchange(&mut input.exchange);
     Ok(Json(state.store.create_qso_log(user.id, &input).await?))
 }
 

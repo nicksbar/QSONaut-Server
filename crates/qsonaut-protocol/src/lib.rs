@@ -601,6 +601,7 @@ pub struct QsoLog {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct QsoLogInput {
     pub event_id: Option<Uuid>,
     #[serde(default)]
