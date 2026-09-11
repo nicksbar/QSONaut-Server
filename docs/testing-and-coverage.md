@@ -1,7 +1,8 @@
 # Testing and coverage
 
 Coverage is measured with `cargo llvm-cov` across the Rust workspace. The CI
-Rust job uploads the LCOV artifact and prints the summary for every build.
+Rust job provisions Postgres so database-backed contracts execute, uploads the
+LCOV artifact, prints the summary, and fails pull requests below the minimums.
 
 ## Baseline
 
@@ -10,9 +11,9 @@ station, diagnostic, event visibility, activity-sharing, device lifecycle, and
 administrator-boundary contracts on the server-console-boundaries feature
 branch:
 
-- 57.98% region coverage
-- 53.87% line coverage
-- 51.48% function coverage
+- 57.98% region coverage (CI minimum)
+- 53.87% line coverage (CI minimum)
+- 51.48% function coverage (CI minimum)
 
 The distribution matters: the contest catalog is 100%, the protocol is about
 69% by line, but the API and store contain many unexercised management paths.
@@ -30,8 +31,8 @@ Build coverage in this order:
    diagnostics ownership, station ownership, event scope, and retry behavior.
 3. Add negative tests for every administrator-only route and every
    cross-organization access path.
-4. Add focused unit tests for validation and error mapping, then enforce the
-   50% line threshold once the measured baseline is above it.
+4. Add focused unit tests for validation and error mapping, then raise the CI
+   minimums only after a new measured baseline is repeatable.
 
 Do not count generated web output or database migration SQL as application
 coverage. The web package currently has compile/build validation; component and
