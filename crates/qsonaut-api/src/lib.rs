@@ -659,6 +659,154 @@ mod tests {
         assert_eq!(unauthenticated.status(), 401);
     }
 
+    #[tokio::test]
+    async fn member_can_update_profile_and_create_a_club_visible_in_workspace() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping profile workspace contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let policy = ServerPolicy::custom("test", None, Vec::new());
+        let user_id = Uuid::new_v4();
+        let callsign = format!("P{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let club_callsign = format!("w{}", &user_id.simple().to_string()[..6]);
+        let password = "profile-workspace-contract-password";
+        let hash = auth::hash_password(password.to_owned()).await.expect("hash password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Original profile',$3,'member')")
+            .bind(user_id).bind(&callsign).bind(hash).execute(store.pool()).await
+            .expect("insert profile test user");
+        let login = router_with_store_and_policy(store.clone(), false, policy.clone()).oneshot(
+            Request::builder().method("POST").uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#)))
+                .expect("login request")
+        ).await.expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login.headers().get("set-cookie").expect("session cookie")
+            .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+
+        let profile_update = router_with_store_and_policy(store.clone(), false, policy.clone()).oneshot(
+            Request::builder().method("PATCH").uri("/api/v1/auth/me")
+                .header("content-type", "application/json").header("cookie", &cookie)
+                .body(Body::from(r#"{"display_name":"Updated profile"}"#))
+                .expect("profile update request")
+        ).await.expect("profile update response");
+        assert_eq!(profile_update.status(), 200);
+        let updated_user: CurrentUser = serde_json::from_slice(
+            &profile_update.into_body().collect().await.expect("profile update body").to_bytes()
+        ).expect("updated user JSON");
+        assert_eq!(updated_user.display_name, "Updated profile");
+
+        let club_response = router_with_store_and_policy(store.clone(), false, policy.clone()).oneshot(
+            Request::builder().method("POST").uri("/api/v1/clubs")
+                .header("content-type", "application/json").header("cookie", &cookie)
+                .body(Body::from(format!(r#"{{"name":"Workspace Club {user_id}","callsign":"{club_callsign}","description":"A club for workspace testing"}}"#)))
+                .expect("club creation request")
+        ).await.expect("club creation response");
+        assert_eq!(club_response.status(), 200);
+        let created_club: Club = serde_json::from_slice(
+            &club_response.into_body().collect().await.expect("club body").to_bytes()
+        ).expect("created club JSON");
+        assert_eq!(created_club.callsign.as_deref(), Some(club_callsign.to_ascii_uppercase().as_str()));
+        assert_eq!(created_club.my_role.as_deref(), Some("owner"));
+
+        let clubs_response = router_with_store_and_policy(store.clone(), false, policy.clone()).oneshot(
+            Request::builder().uri("/api/v1/clubs").header("cookie", &cookie)
+                .body(Body::empty()).expect("clubs request")
+        ).await.expect("clubs response");
+        assert_eq!(clubs_response.status(), 200);
+        let clubs: Vec<Club> = serde_json::from_slice(
+            &clubs_response.into_body().collect().await.expect("clubs body").to_bytes()
+        ).expect("clubs JSON");
+        let workspace_club = clubs.iter().find(|club| club.id == created_club.id).expect("created club in workspace");
+        assert_eq!(workspace_club.my_membership_status.as_deref(), Some("active"));
+        assert!(workspace_club.can_manage);
+
+        let me_response = router_with_store_and_policy(store, false, policy).oneshot(
+            Request::builder().uri("/api/v1/auth/me").header("cookie", cookie)
+                .body(Body::empty()).expect("me request")
+        ).await.expect("me response");
+        assert_eq!(me_response.status(), 200);
+        let me: CurrentUser = serde_json::from_slice(
+            &me_response.into_body().collect().await.expect("me body").to_bytes()
+        ).expect("me JSON");
+        assert_eq!(me.display_name, "Updated profile");
+    }
+
+    #[tokio::test]
+    async fn member_can_request_club_join_and_owner_can_approve_it() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping club join contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let owner_id = Uuid::new_v4();
+        let member_id = Uuid::new_v4();
+        let owner_callsign = format!("C{}", &owner_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let member_callsign = format!("J{}", &member_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "club-join-contract-password";
+        let owner_hash = auth::hash_password(password.to_owned()).await.expect("hash owner password");
+        let member_hash = auth::hash_password(password.to_owned()).await.expect("hash member password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Join owner',$3,'member'),($4,$5,'Join member',$6,'member')")
+            .bind(owner_id).bind(&owner_callsign).bind(owner_hash)
+            .bind(member_id).bind(&member_callsign).bind(member_hash)
+            .execute(store.pool()).await.expect("insert join test users");
+        let club = store.create_club(&ClubInput {
+            name: format!("Join Club {}", &owner_id.simple().to_string()[..6]),
+            callsign: None,
+            description: "join workflow contract".to_owned(),
+        }, owner_id).await.expect("create join club");
+
+        async fn login(store: Store, callsign: &str, password: &str) -> String {
+            let response = router_with_store(store, false).oneshot(
+                Request::builder().method("POST").uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#)))
+                    .expect("login request")
+            ).await.expect("login response");
+            assert_eq!(response.status(), 200);
+            response.headers().get("set-cookie").expect("session cookie")
+                .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned()
+        }
+
+        let member_cookie = login(store.clone(), &member_callsign, password).await;
+        let request_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST")
+                .uri(format!("/api/v1/clubs/{}/join-requests", club.id))
+                .header("cookie", &member_cookie).body(Body::empty()).expect("join request")
+        ).await.expect("join response");
+        assert_eq!(request_response.status(), 200);
+        let join_request: ClubJoinRequest = serde_json::from_slice(
+            &request_response.into_body().collect().await.expect("join body").to_bytes()
+        ).expect("join request JSON");
+        assert_eq!(join_request.status, "pending");
+
+        let owner_cookie = login(store.clone(), &owner_callsign, password).await;
+        let pending_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri(format!("/api/v1/clubs/{}/join-requests", club.id))
+                .header("cookie", &owner_cookie).body(Body::empty()).expect("pending request")
+        ).await.expect("pending response");
+        assert_eq!(pending_response.status(), 200);
+        let pending: Vec<ClubJoinRequest> = serde_json::from_slice(
+            &pending_response.into_body().collect().await.expect("pending body").to_bytes()
+        ).expect("pending JSON");
+        assert!(pending.iter().any(|item| item.id == join_request.id));
+
+        let decision_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("PATCH")
+                .uri(format!("/api/v1/clubs/{}/join-requests/{}", club.id, join_request.id))
+                .header("content-type", "application/json").header("cookie", &owner_cookie)
+                .body(Body::from(r#"{"decision":"approve","role":"operator"}"#))
+                .expect("decision request")
+        ).await.expect("decision response");
+        assert_eq!(decision_response.status(), 200);
+        let approved: ClubJoinRequest = serde_json::from_slice(
+            &decision_response.into_body().collect().await.expect("decision body").to_bytes()
+        ).expect("decision JSON");
+        assert_eq!(approved.status, "approved");
+        assert_eq!(store.club_role(club.id, member_id).await.expect("membership lookup").as_deref(), Some("operator"));
+    }
+
     #[test]
     fn openapi_covers_management_and_authentication_routes() {
         let document = ApiDoc::openapi();
