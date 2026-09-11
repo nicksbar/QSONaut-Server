@@ -4,6 +4,7 @@
   import ActivitySummaryPanel from '$lib/ActivitySummaryPanel.svelte';
   import ActivityVisibilityPanel from '$lib/ActivityVisibilityPanel.svelte';
   import ClubsPanel from '$lib/ClubsPanel.svelte';
+  import ChannelMessagesPanel from '$lib/ChannelMessagesPanel.svelte';
   import EventsPanel from '$lib/EventsPanel.svelte';
   import IdentityPanel from '$lib/IdentityPanel.svelte';
   import MembersPanel from '$lib/MembersPanel.svelte';
@@ -14,7 +15,7 @@
   import type { AccessCallsignLookup, AccessChallenge, AccessRequest, ChannelMessage, Club, ContestTemplate, DiagnosticReport, Event, ManagedCallsign, QsoLog, ServerCapabilities, Station, User, UserProfile } from '$lib/types';
 
   type Phase = 'loading' | 'setup' | 'login' | 'ready' | 'error';
-  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'identities' | 'activity' | 'station' | 'profile' | 'admin' | 'admin-operations' | 'admin-identities' | 'server-data';
+  type Tab = 'overview' | 'clubs' | 'members' | 'events' | 'identities' | 'activity' | 'station' | 'profile' | 'admin' | 'admin-operations' | 'admin-identities' | 'server-data' | 'server-messages';
 
   let phase = $state<Phase>('loading');
   let tab = $state<Tab>('overview');
@@ -41,6 +42,8 @@
   let logs = $state<QsoLog[]>([]);
   let messages = $state<ChannelMessage[]>([]);
   let diagnostics = $state<DiagnosticReport[]>([]);
+  let diagnosticsAdminNotice = $state('');
+  let diagnosticsAdminBusy = $state(false);
   let activityRefreshInFlight = false;
   let operatorMenuOpen = $state(false);
   let joinOpen = $state(false);
@@ -82,6 +85,25 @@
     } finally {
       activityRefreshInFlight = false;
     }
+  }
+
+  async function exportDiagnostics() {
+    diagnosticsAdminBusy = true; diagnosticsAdminNotice = '';
+    try {
+      const reports = await api<DiagnosticReport[]>('/api/v1/diagnostics/export');
+      const url = URL.createObjectURL(new Blob([JSON.stringify(reports, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = `qsonaut-diagnostics-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url);
+      diagnosticsAdminNotice = `Exported ${reports.length} diagnostic reports.`;
+    } catch (cause) { diagnosticsAdminNotice = (cause as Error).message; }
+    finally { diagnosticsAdminBusy = false; }
+  }
+
+  async function purgeDiagnostics() {
+    if (!confirm('Purge expired diagnostic reports and retained share artifacts?')) return;
+    diagnosticsAdminBusy = true; diagnosticsAdminNotice = '';
+    try { await api('/api/v1/diagnostics/retention/purge', { method: 'POST' }); diagnosticsAdminNotice = 'Expired retained artifacts purged.'; await refreshActivity(); }
+    catch (cause) { diagnosticsAdminNotice = (cause as Error).message; }
+    finally { diagnosticsAdminBusy = false; }
   }
 
   async function load() {
@@ -317,7 +339,7 @@
         <p>MY STATION &amp; DATA</p>
         <button class:active={tab === 'activity'} onclick={() => openTab('activity')}><span>≋</span> Sharing center</button>
         <button class:active={tab === 'station'} onclick={() => openTab('station')}><span>⌘</span> My Stations</button>
-        {#if user?.global_role === 'administrator'}<p>ADMINISTRATION</p><button class:active={tab === 'admin'} onclick={() => openTab('admin')}><span>♙</span> Accounts &amp; access</button><button class:active={tab === 'admin-operations'} onclick={() => openTab('admin-operations')}><span>◌</span> Organization repair</button><button class:active={tab === 'admin-identities'} onclick={() => openTab('admin-identities')}><span>⌁</span> Identity review</button><p>SERVER DATA</p><button class:active={tab === 'server-data'} onclick={() => openTab('server-data')}><span>⌁</span> Hardware validation</button>{/if}
+        {#if user?.global_role === 'administrator'}<p>ADMINISTRATION</p><button class:active={tab === 'admin'} onclick={() => openTab('admin')}><span>♙</span> Accounts &amp; access</button><button class:active={tab === 'admin-operations'} onclick={() => openTab('admin-operations')}><span>◌</span> Organization repair</button><button class:active={tab === 'admin-identities'} onclick={() => openTab('admin-identities')}><span>⌁</span> Identity review</button><p>SERVER DATA</p><button class:active={tab === 'server-data'} onclick={() => openTab('server-data')}><span>⌁</span> Hardware validation</button><button class:active={tab === 'server-messages'} onclick={() => openTab('server-messages')}><span>›_</span> Channel traffic</button>{/if}
       </nav>
       <div class="sidebar-foot"><a href={qsonautDesktopUrl} target="_blank" rel="noreferrer">Desktop app ↗</a><a href={qsonautServerUrl} target="_blank" rel="noreferrer">Server docs ↗</a></div>
     </aside>
@@ -348,7 +370,8 @@
       {:else if tab === 'admin' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / ACCOUNTS</p><h1>Accounts &amp; access</h1><p>Review access requests, operator accounts, and account recovery. Organization repair and identity review are separate administrator workspaces.</p></div><MembersPanel {members} {clubs} {accessRequests} refresh={load} /></section>
       {:else if tab === 'admin-operations' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / ORGANIZATIONS</p><h1>Organization repair</h1><p>Resolve cross-organization operation, contest, roster, and assignment issues without mixing them with account or identity administration.</p></div><EventsPanel {events} {clubs} {templates} administrator={true} refresh={load} /></section>
       {:else if tab === 'admin-identities' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">ADMINISTRATION / IDENTITIES</p><h1>Identity review</h1><p>Review global callsign records and their organization or event authority separately from operator accounts and contest operations.</p></div><IdentityPanel {identities} {clubs} {events} /></section>
-      {:else if tab === 'server-data' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">SERVER DATA / ADMINISTRATOR ONLY</p><h1>Hardware validation</h1><p>Review opt-in hardware validation snapshots alongside their connected-station context. Submitted QSO logs and automation traffic are retained separately and are not part of this validation workspace.</p></div><ActivityPanel administrator={true} {capabilities} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} showLogs={false} showMessages={false} /></section>
+      {:else if tab === 'server-data' && user?.global_role === 'administrator'}<section class="admin-workspace"><div class="admin-intro"><p class="eyebrow amber">SERVER DATA / ADMINISTRATOR ONLY</p><h1>Hardware validation</h1><p>Review opt-in hardware validation snapshots alongside their connected-station context. Submitted QSO logs and automation traffic are retained separately and are not part of this validation workspace.</p><div class="actions"><button onclick={() => void exportDiagnostics()} disabled={diagnosticsAdminBusy}>EXPORT REPORTS</button><button class="danger" onclick={() => void purgeDiagnostics()} disabled={diagnosticsAdminBusy}>PURGE EXPIRED DATA</button></div>{#if diagnosticsAdminNotice}<p class="notice">{diagnosticsAdminNotice}</p>{/if}</div><ActivityPanel administrator={true} {capabilities} {stations} {logs} {messages} {diagnostics} refresh={refreshActivity} showLogs={false} showMessages={false} /></section>
+      {:else if tab === 'server-messages' && user?.global_role === 'administrator'}<section class="admin-workspace"><ChannelMessagesPanel {messages} /></section>
       {:else}<MyStationsPanel {stations} /><StationLinkPanel currentUser={user} />{/if}
     </main>
     </div>

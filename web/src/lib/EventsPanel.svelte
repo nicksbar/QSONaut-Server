@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from './api';
+  import SpecialIdentityControls from './SpecialIdentityControls.svelte';
   import type { Club, ClubMember, ContestTemplate, Event, EventParticipant, EventScore, ManagedCallsign } from './types';
 
   let { events, clubs, templates, administrator, refresh }: { events: Event[]; clubs: Club[]; templates: ContestTemplate[]; administrator: boolean; refresh: () => Promise<void> } = $props();
@@ -54,6 +55,7 @@
         {#if error}<p class="error">{error}</p>{/if}<div class="actions"><button disabled={working || !clubId}>{working ? 'SAVING…' : editingEventId ? 'SAVE OPERATION' : 'CREATE OPERATION'}</button></div>
       </form>
     {:else if selectedEvent}
+      <SpecialIdentityControls event={selectedEvent} identity={specialIdentity} administrator={administrator} canManage={canManage(selectedEvent)} changed={() => selectEvent(selectedEvent!)} />
       <div class="operation-header"><div><p class="eyebrow">{clubName(selectedEvent.club_id)} / {eventTemplate?.organization || 'CLUB OPERATION'}</p><h1>{selectedEvent.name}</h1><p>{eventTemplate?.name || 'General club operation'} · {new Date(selectedEvent.starts_at).toLocaleString()} → {new Date(selectedEvent.ends_at).toLocaleString()}</p></div><span class="status-badge">{selectedEvent.status}</span></div>
       {#if error}<p class="error">{error}</p>{/if}{#if canManage(selectedEvent)}<div class="operation-actions"><button onclick={() => editEvent(selectedEvent)}>EDIT PLAN</button>{#if selectedEvent.status === 'draft'}<button onclick={() => setStatus('scheduled')}>SCHEDULE</button>{/if}{#if !['active', 'completed', 'cancelled'].includes(selectedEvent.status)}<button onclick={() => setStatus('active')}>ACTIVATE</button>{/if}{#if selectedEvent.status === 'active'}<button onclick={() => setStatus('completed')}>COMPLETE</button>{/if}{#if !['completed', 'cancelled'].includes(selectedEvent.status)}<button class="danger" onclick={() => setStatus('cancelled')}>CANCEL</button>{/if}</div>{/if}
       {#if detailLoading}<p class="empty">Loading operation records…</p>{:else}<div class="operation-metrics"><article><small>QSOs logged</small><b>{score?.qso_count ?? 0}</b></article><article><small>Score</small><b>{score?.total_points ?? 0}</b></article><article><small>Duplicates held</small><b>{score?.duplicate_count ?? 0}</b></article><article><small>Assigned operators</small><b>{participants.length}</b></article></div>{/if}
