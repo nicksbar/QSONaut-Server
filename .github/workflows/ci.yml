@@ -60,6 +60,11 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:e2e
+        working-directory: web
 
   migrations:
     runs-on: ubuntu-latest
