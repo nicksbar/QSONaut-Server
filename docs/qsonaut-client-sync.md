@@ -10,33 +10,39 @@ Presence is a last-known coordination snapshot. It grants no server authority ov
 
 ## QSO collection
 
-An authenticated QSONaut client may submit an idempotent record to `POST /api/v1/logs`. Each record has a client-generated UUID, operator identity from the authenticated session, optional event, callsign, band, mode, optional frequency/RST/exchange fields, timestamp, points, and source.
+An authenticated QSONaut client may submit an idempotent record to `POST /api/v1/logs`. Each record has a client-generated UUID, operator identity from the authenticated session, a verified managed operating identity (`operating_callsign` and `callsign_id`), optional event, contact callsign, band, mode, optional frequency/RST/exchange fields, timestamp, points, and source.
 
 The same `QsoLogInput` contract is used by the WebSocket `log` message. The
-top-level shape is closed: unknown fields are rejected, contact callsigns,
-band, mode, source, timestamps, and exchange structure are validated before
-storage, and event records must carry both `operating_callsign` and
-`callsign_id`. Contest `fields_sent` and `fields_received` keys are canonical
+top-level shape is closed: unknown fields are rejected, contact and operating
+callsigns, band, mode, source, timestamps, and exchange structure are
+validated before storage, and every record must carry both
+`operating_callsign` and `callsign_id`. Contest `fields_sent` and `fields_received` keys are canonical
 lowercase catalog keys; the server normalizes legacy casing before applying
 the authoritative contest definition and PostgreSQL event checks.
 
 The server treats a repeated idempotency key from the same authenticated operator as a retry and returns the already-stored record without creating a duplicate. The management UI is intentionally read-only for QSO activity: operating and correction workflows remain in QSONaut until conflict-resolution and audit semantics are designed.
 
-The management UI presents activity at the operator level: overall, for a
-club, or for a contest, with selectable time periods and a status badge. QSO
-records remain operating records rather than individually managed privacy
-objects. Operators control overall, club, and contest audiences through
-`/api/v1/activity/visibility`; contest and club policies override the overall
-policy. An authorized owner or administrator can create a short-lived
+The management UI presents activity by permitted operating context. Activity
+policies target a managed callsign, club, or event through
+`/api/v1/activity/visibility`; event policies override callsign policies, and
+callsign policies override club defaults. Personal callsigns may be controlled
+by their owner. Club and special callsign policies, plus club and event
+policies, require an owning club owner or coordinator. A policy does not grant
+access by itself: `private` is submitter-only, `members` requires active
+membership in the owning club, and `global` permits authenticated viewers.
+Maps use this same effective visibility query for personal, identity, club,
+and event scopes. QSO records remain operating records rather than individually
+managed privacy objects. An authorized owner or administrator can create a short-lived
 revocable share grant through
 `POST /api/v1/logs/{log_id}/share`; the response contains a copyable path, and
 the public read endpoint does not expose the underlying log ID. The copied
 path opens a human-readable share page; `/api/v1/share/{token}` remains
 available for JSON consumers.
 
-Event QSO submissions must include the selected `operating_callsign` and
-`callsign_id`. Missing or unassigned identities are rejected by the database
-boundary; older clients cannot bypass event authorization by omitting them.
+Event and ordinary QSO submissions must include the selected
+`operating_callsign` and `callsign_id`. Missing, stale, or unassigned
+identities are rejected by both the request and database boundaries; clients
+cannot bypass authorization by omitting them.
 `GET /api/v1/identities` returns the caller's usable personal, club, and
 event-linked special identities. Special identities are registered through
 `POST /api/v1/identities/special`; administrators can approve or reject them,

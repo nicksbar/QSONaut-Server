@@ -79,10 +79,11 @@ export type ActivitySummary = {
 
 export type ActivityVisibility = {
   id: string;
-  user_id: string;
-  scope: 'overall' | 'club' | 'contest';
-  scope_id: string | null;
+  scope: 'identity' | 'club' | 'event';
+  scope_id: string;
   visibility: 'private' | 'members' | 'global';
+  updated_by_user_id: string;
+  can_edit: boolean;
   updated_at: string;
 };
 
@@ -279,10 +280,10 @@ export type QsoLog = {
   id: string;
   user_id: string;
   operator_callsign: string;
+  operating_callsign: string | null;
+  callsign_id: string | null;
   event_id: string | null;
   event_name: string | null;
-  visibility: 'private' | 'global' | 'club' | 'contest';
-  visibility_club_id: string | null;
   callsign: string;
   band: string;
   mode: string;

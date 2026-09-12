@@ -313,7 +313,10 @@ pub fn router_with_store_and_policy(
             delete(management::revoke_log_share),
         )
         .route("/api/v1/share/{token}", get(management::shared_log))
-        .route("/api/v1/diagnostics", get(management::diagnostics))
+        .route(
+            "/api/v1/diagnostics",
+            get(management::diagnostics).delete(management::purge_diagnostics),
+        )
         .with_state(state);
     router().merge(management)
 }
@@ -461,6 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::items_after_statements)]
     async fn administrator_can_review_global_station_and_diagnostic_data() {
         let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
             eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping administrator API contract");
@@ -608,8 +612,8 @@ mod tests {
         assert_eq!(login.status(), 200);
         let cookie = login.headers().get("set-cookie").expect("session cookie")
             .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
-        let response = router_with_store(store, false).oneshot(
-            Request::builder().uri("/api/v1/events").header("cookie", cookie)
+        let response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().uri("/api/v1/events").header("cookie", &cookie)
                 .body(Body::empty()).expect("events request")
         ).await.expect("events response");
         assert_eq!(response.status(), 200);
@@ -618,6 +622,14 @@ mod tests {
         assert!(events.iter().any(|event| event.id == visible_event.id));
         assert!(!events.iter().any(|event| event.id == hidden_event.id));
         assert!(events.iter().all(|event| event.club_id == member_club.id));
+        let visible_map = router_with_store(store.clone(), false).oneshot(Request::builder()
+            .uri(format!("/api/v1/activity/map?scope=event&scope_id={}", visible_event.id))
+            .header("cookie", &cookie).body(Body::empty()).expect("visible event map request")).await.expect("visible event map response");
+        assert_eq!(visible_map.status(), 200);
+        let hidden_map = router_with_store(store, false).oneshot(Request::builder()
+            .uri(format!("/api/v1/activity/map?scope=event&scope_id={}", hidden_event.id))
+            .header("cookie", cookie).body(Body::empty()).expect("hidden event map request")).await.expect("hidden event map response");
+        assert_eq!(hidden_map.status(), 403);
     }
 
     #[tokio::test]
@@ -647,6 +659,7 @@ mod tests {
         for (method, path) in [
             ("GET", "/api/v1/members"),
             ("GET", "/api/v1/diagnostics/export"),
+            ("DELETE", "/api/v1/diagnostics"),
             ("POST", "/api/v1/diagnostics/retention/purge"),
         ] {
             let response = router_with_store(store.clone(), false).oneshot(
@@ -712,13 +725,13 @@ mod tests {
         assert_eq!(created_club.callsign.as_deref(), Some(club_callsign.to_ascii_uppercase().as_str()));
         assert_eq!(created_club.my_role.as_deref(), Some("owner"));
 
-        let clubs_response = router_with_store_and_policy(store.clone(), false, policy.clone()).oneshot(
+        let club_list_response = router_with_store_and_policy(store.clone(), false, policy.clone()).oneshot(
             Request::builder().uri("/api/v1/clubs").header("cookie", &cookie)
                 .body(Body::empty()).expect("clubs request")
         ).await.expect("clubs response");
-        assert_eq!(clubs_response.status(), 200);
+        assert_eq!(club_list_response.status(), 200);
         let clubs: Vec<Club> = serde_json::from_slice(
-            &clubs_response.into_body().collect().await.expect("clubs body").to_bytes()
+            &club_list_response.into_body().collect().await.expect("clubs body").to_bytes()
         ).expect("clubs JSON");
         let workspace_club = clubs.iter().find(|club| club.id == created_club.id).expect("created club in workspace");
         assert_eq!(workspace_club.my_membership_status.as_deref(), Some("active"));
@@ -746,6 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::items_after_statements)]
     async fn member_can_request_club_join_and_owner_can_approve_it() {
         let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
             eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping club join contract");
@@ -820,6 +834,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn member_can_submit_log_and_change_activity_visibility() {
         let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
             eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping activity sharing contract");
@@ -842,12 +857,26 @@ mod tests {
         assert_eq!(login.status(), 200);
         let cookie = login.headers().get("set-cookie").expect("session cookie")
             .to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned();
+        let missing_identity_response = router_with_store(store.clone(), false).oneshot(
+            Request::builder().method("POST").uri("/api/v1/logs")
+                .header("content-type", "application/json").header("cookie", &cookie)
+                .body(Body::from(format!(r#"{{"idempotency_key":"{}","callsign":"K1ABC","band":"20m","mode":"FT8","occurred_at":"{}","exchange":{{}},"source":"api-contract"}}"#, Uuid::new_v4(), Utc::now().to_rfc3339())))
+                .expect("missing identity request")
+        ).await.expect("missing identity response");
+        assert_eq!(missing_identity_response.status(), 400);
         let idempotency_key = Uuid::new_v4();
         let occurred_at = Utc::now();
+        let personal_identity_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM managed_callsigns WHERE owner_user_id=$1 AND identity_type='personal'",
+        )
+        .bind(user_id)
+        .fetch_one(store.pool())
+        .await
+        .expect("provisioned personal identity");
         let log_response = router_with_store(store.clone(), false).oneshot(
             Request::builder().method("POST").uri("/api/v1/logs")
                 .header("content-type", "application/json").header("cookie", &cookie)
-                .body(Body::from(format!(r#"{{"idempotency_key":"{idempotency_key}","callsign":"k1abc","band":"20m","mode":"FT8","occurred_at":"{}","exchange":{{"section":"OR","grid":"cn87"}},"source":"api-contract"}}"#, occurred_at.to_rfc3339())))
+                .body(Body::from(format!(r#"{{"operating_callsign":"{callsign}","callsign_id":"{personal_identity_id}","idempotency_key":"{idempotency_key}","callsign":"k1abc","band":"20m","mode":"FT8","occurred_at":"{}","exchange":{{"section":"OR","grid":"cn87"}},"source":"api-contract"}}"#, occurred_at.to_rfc3339())))
                 .expect("log request")
         ).await.expect("log response");
         assert_eq!(log_response.status(), 200);
@@ -857,27 +886,34 @@ mod tests {
         assert_eq!(log.user_id, user_id);
         assert_eq!(log.mode, "FT8");
 
-        let logs_response = router_with_store(store.clone(), false).oneshot(
+        let log_list_response = router_with_store(store.clone(), false).oneshot(
             Request::builder().uri("/api/v1/logs").header("cookie", &cookie)
                 .body(Body::empty()).expect("logs request")
         ).await.expect("logs response");
-        assert_eq!(logs_response.status(), 200);
+        assert_eq!(log_list_response.status(), 200);
         let logs: Vec<QsoLog> = serde_json::from_slice(
-            &logs_response.into_body().collect().await.expect("logs body").to_bytes()
+            &log_list_response.into_body().collect().await.expect("logs body").to_bytes()
         ).expect("logs JSON");
         assert!(logs.iter().any(|item| item.id == log.id));
 
+        let identity_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM managed_callsigns WHERE owner_user_id=$1 AND identity_type='personal'",
+        )
+        .bind(user_id)
+        .fetch_one(store.pool())
+        .await
+        .expect("provisioned personal callsign");
         let visibility_response = router_with_store(store.clone(), false).oneshot(
             Request::builder().method("PUT").uri("/api/v1/activity/visibility")
                 .header("content-type", "application/json").header("cookie", &cookie)
-                .body(Body::from(r#"{"scope":"overall","visibility":"global"}"#))
+                .body(Body::from(format!(r#"{{"scope":"identity","scope_id":"{identity_id}","visibility":"global"}}"#)))
                 .expect("visibility request")
         ).await.expect("visibility response");
         assert_eq!(visibility_response.status(), 200);
         let visibility: ActivityVisibility = serde_json::from_slice(
             &visibility_response.into_body().collect().await.expect("visibility body").to_bytes()
         ).expect("visibility JSON");
-        assert_eq!(visibility.scope, "overall");
+        assert_eq!(visibility.scope, "identity");
         assert_eq!(visibility.visibility, "global");
 
         let policies_response = router_with_store(store.clone(), false).oneshot(
@@ -888,7 +924,7 @@ mod tests {
         let policies: Vec<ActivityVisibility> = serde_json::from_slice(
             &policies_response.into_body().collect().await.expect("policies body").to_bytes()
         ).expect("policies JSON");
-        assert!(policies.iter().any(|policy| policy.scope == "overall" && policy.visibility == "global"));
+        assert!(policies.iter().any(|policy| policy.scope == "identity" && policy.scope_id == identity_id && policy.visibility == "global"));
 
         let summary_response = router_with_store(store.clone(), false).oneshot(
             Request::builder().uri("/api/v1/activity/summary?scope=overall&period_days=30")
@@ -927,7 +963,7 @@ mod tests {
         assert!((points[0].longitude + 123.0).abs() < f64::EPSILON);
 
         let callsign_map_response = router_with_store(store.clone(), false).oneshot(
-            Request::builder().uri(format!("/api/v1/activity/map?scope=overall&callsign_id={identity_id}"))
+            Request::builder().uri(format!("/api/v1/activity/map?scope=identity&scope_id={identity_id}"))
                 .header("cookie", &cookie).body(Body::empty()).expect("callsign map request")
         ).await.expect("callsign map response");
         assert_eq!(callsign_map_response.status(), 200);
@@ -948,6 +984,81 @@ mod tests {
                 .header("cookie", cookie).body(Body::empty()).expect("invalid summary request")
         ).await.expect("invalid summary response");
         assert_eq!(invalid_summary.status(), 400);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::items_after_statements, clippy::too_many_lines)]
+    async fn activity_policy_edits_are_limited_to_the_policy_owner() {
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping policy ownership contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let owner_id = Uuid::new_v4();
+        let member_id = Uuid::new_v4();
+        let owner_callsign = format!("P{}", &owner_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let member_callsign = format!("P{}", &member_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "policy-owner-contract-password";
+        let owner_hash = auth::hash_password(password.to_owned()).await.expect("hash owner password");
+        let member_hash = auth::hash_password(password.to_owned()).await.expect("hash member password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Policy owner',$3,'member'),($4,$5,'Policy member',$6,'member')")
+            .bind(owner_id).bind(&owner_callsign).bind(owner_hash)
+            .bind(member_id).bind(&member_callsign).bind(member_hash)
+            .execute(store.pool()).await.expect("insert policy users");
+        let club = store.create_club(&ClubInput {
+            name: format!("Policy Club {}", &owner_id.simple().to_string()[..8]),
+            callsign: Some(format!("C{}", &owner_id.simple().to_string()[..6]).to_ascii_uppercase()),
+            description: "policy ownership contract".to_owned(),
+        }, owner_id).await.expect("create policy club");
+        sqlx::query("INSERT INTO club_members (club_id,user_id,role) VALUES ($1,$2,'operator')")
+            .bind(club.id).bind(member_id).execute(store.pool()).await.expect("add policy member");
+        let club_identity_id: Uuid = sqlx::query_scalar("SELECT id FROM managed_callsigns WHERE club_id=$1 AND identity_type='club'")
+            .bind(club.id).fetch_one(store.pool()).await.expect("club identity");
+        async fn policy_cookie(store: Store, callsign: &str, password: &str) -> String {
+            let response = router_with_store(store, false).oneshot(Request::builder().method("POST").uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"callsign":"{callsign}","password":"{password}"}}"#))).expect("login request")).await.expect("login response");
+            assert_eq!(response.status(), 200);
+            response.headers().get("set-cookie").expect("session cookie").to_str().expect("cookie text").split(';').next().expect("cookie value").to_owned()
+        }
+        let owner_cookie = policy_cookie(store.clone(), &owner_callsign, password).await;
+        let member_cookie = policy_cookie(store.clone(), &member_callsign, password).await;
+        let member_attempt = router_with_store(store.clone(), false).oneshot(Request::builder().method("PUT").uri("/api/v1/activity/visibility")
+            .header("content-type", "application/json").header("cookie", &member_cookie)
+            .body(Body::from(format!(r#"{{"scope":"club","scope_id":"{}","visibility":"global"}}"#, club.id))).expect("member policy request")).await.expect("member policy response");
+        assert_eq!(member_attempt.status(), 403);
+        let owner_response = router_with_store(store.clone(), false).oneshot(Request::builder().method("PUT").uri("/api/v1/activity/visibility")
+            .header("content-type", "application/json").header("cookie", &owner_cookie)
+            .body(Body::from(format!(r#"{{"scope":"club","scope_id":"{}","visibility":"members"}}"#, club.id))).expect("owner policy request")).await.expect("owner policy response");
+        assert_eq!(owner_response.status(), 200);
+        let member_log = QsoLogInput {
+            event_id: None,
+            operating_callsign: Some(club.callsign.clone().expect("club callsign")),
+            callsign_id: Some(club_identity_id),
+            idempotency_key: Uuid::new_v4(),
+            callsign: "W1AW".to_owned(), band: "20m".to_owned(), mode: "FT8".to_owned(),
+            frequency_hz: Some(14_074_000), occurred_at: Utc::now(), rst_sent: None, rst_received: None,
+            exchange: serde_json::json!({"grid":"CN87"}), points: 0, source: "policy-contract".to_owned(),
+        };
+        store.create_qso_log(member_id, &member_log).await.expect("insert club identity log");
+        let owner_logs = store.qso_logs_for_viewer(owner_id, false, 100).await.expect("owner visible logs");
+        assert!(owner_logs.iter().any(|log| log.user_id == member_id));
+        let map_response = router_with_store(store.clone(), false).oneshot(Request::builder()
+            .uri(format!("/api/v1/activity/map?scope=club&scope_id={}", club.id))
+            .header("cookie", &owner_cookie).body(Body::empty()).expect("club map request")).await.expect("club map response");
+        assert_eq!(map_response.status(), 200);
+        let map_points: Vec<ActivityMapPoint> = serde_json::from_slice(&map_response.into_body().collect().await.expect("club map body").to_bytes()).expect("club map JSON");
+        assert_eq!(map_points.first().map(|point| point.grid.as_str()), Some("CN87"));
+        let owned_map_response = router_with_store(store.clone(), false).oneshot(Request::builder()
+            .uri("/api/v1/activity/map?scope=overall")
+            .header("cookie", &owner_cookie).body(Body::empty()).expect("owned map request")).await.expect("owned map response");
+        assert_eq!(owned_map_response.status(), 200);
+        let owned_map_points: Vec<ActivityMapPoint> = serde_json::from_slice(&owned_map_response.into_body().collect().await.expect("owned map body").to_bytes()).expect("owned map JSON");
+        assert!(owned_map_points.is_empty(), "club activity must not appear in the owned-callsign map");
+        let response = router_with_store(store, false).oneshot(Request::builder().uri("/api/v1/activity/visibility").header("cookie", member_cookie).body(Body::empty()).expect("policy list request")).await.expect("policy list response");
+        let policies: Vec<ActivityVisibility> = serde_json::from_slice(&response.into_body().collect().await.expect("policy list body").to_bytes()).expect("policy list JSON");
+        let club_policy = policies.iter().find(|policy| policy.scope == "club" && policy.scope_id == club.id).expect("club policy");
+        assert!(!club_policy.can_edit);
     }
 
     #[tokio::test]

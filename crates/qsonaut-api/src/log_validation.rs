@@ -5,6 +5,16 @@ use crate::auth::validate_callsign;
 
 pub(crate) fn validate_log(input: &QsoLogInput) -> Result<(), String> {
     validate_callsign(&input.callsign).map_err(|_| "invalid contact callsign".to_owned())?;
+    if input.callsign_id.is_none()
+        || input
+            .operating_callsign
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err("every QSO requires an operating callsign identity".to_owned());
+    }
+    validate_callsign(input.operating_callsign.as_deref().unwrap_or_default())
+        .map_err(|_| "invalid operating callsign".to_owned())?;
     if input.band.trim().is_empty() || input.band.trim().len() > 40 {
         return Err("band must contain 1 to 40 characters".to_owned());
     }
@@ -25,15 +35,6 @@ pub(crate) fn validate_log(input: &QsoLogInput) -> Result<(), String> {
     if input.source.trim().is_empty() || input.source.len() > 40 {
         return Err("log source must contain 1 to 40 characters".to_owned());
     }
-    if input.event_id.is_some()
-        && (input.callsign_id.is_none()
-            || input
-                .operating_callsign
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty()))
-    {
-        return Err("event QSOs require an operating callsign identity".to_owned());
-    }
     Ok(())
 }
 
@@ -51,12 +52,10 @@ pub(crate) fn canonicalize_contest_exchange(exchange: &mut Value) {
             if canonical == key {
                 continue;
             }
-            if !fields.contains_key(&canonical) {
-                if let Some(value) = fields.remove(&key) {
-                    fields.insert(canonical, value);
-                }
-            } else {
+            if fields.contains_key(&canonical) {
                 fields.remove(&key);
+            } else if let Some(value) = fields.remove(&key) {
+                fields.insert(canonical, value);
             }
         }
     }

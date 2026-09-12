@@ -813,7 +813,6 @@ pub(crate) struct ActivityMapQuery {
     #[serde(default = "default_summary_scope")]
     pub scope: String,
     pub scope_id: Option<Uuid>,
-    pub callsign_id: Option<Uuid>,
 }
 
 #[utoipa::path(
@@ -829,30 +828,36 @@ pub(crate) async fn activity_map(
     Query(query): Query<ActivityMapQuery>,
 ) -> HttpResult<Json<Vec<ActivityMapPoint>>> {
     let user = require_user(&state, &jar).await?;
-    if !["overall", "club"].contains(&query.scope.as_str()) {
-        return Err(HttpError::bad_request("map scope must be overall or club"));
+    if !["overall", "identity", "club", "event"].contains(&query.scope.as_str()) {
+        return Err(HttpError::bad_request("map scope must be overall, identity, club, or event"));
     }
     if query.scope == "overall" && query.scope_id.is_some() {
         return Err(HttpError::bad_request("overall map scope cannot have a target"));
     }
-    let callsign_filter = if let Some(callsign_id) = query.callsign_id {
-        if query.scope != "overall" {
-            return Err(HttpError::bad_request("callsign filtering is only available for your own map"));
-        }
-        let callsign = state
-            .store
-            .managed_callsign(callsign_id)
-            .await?
-            .ok_or_else(HttpError::not_found)?;
-        if callsign.owner_user_id != Some(user.id) {
+    if query.scope != "overall" && query.scope_id.is_none() {
+        return Err(HttpError::bad_request("this map scope requires an id"));
+    }
+    if query.scope == "identity" {
+        let identity_id = query.scope_id.expect("validated above");
+        let identity = state.store.managed_callsign(identity_id).await?.ok_or_else(HttpError::not_found)?;
+        let identity_member = if let Some(club_id) = identity.club_id {
+            state.store.active_club_member(user.id, club_id).await?
+        } else {
+            false
+        };
+        if user.global_role != "administrator" && identity.owner_user_id != Some(user.id) && !identity_member {
             return Err(HttpError::forbidden());
         }
-        Some(callsign.callsign)
-    } else {
-        None
-    };
+    }
     if query.scope == "club" {
         let club_id = query.scope_id.ok_or_else(|| HttpError::bad_request("club map scope requires a club"))?;
+        if user.global_role != "administrator" && !state.store.active_club_member(user.id, club_id).await? {
+            return Err(HttpError::forbidden());
+        }
+    }
+    if query.scope == "event" {
+        let event_id = query.scope_id.expect("validated above");
+        let club_id = state.store.event_club_id(event_id).await?.ok_or_else(HttpError::not_found)?;
         if user.global_role != "administrator" && !state.store.active_club_member(user.id, club_id).await? {
             return Err(HttpError::forbidden());
         }
@@ -865,8 +870,6 @@ pub(crate) async fn activity_map(
                 user.global_role == "administrator",
                 &query.scope,
                 query.scope_id,
-                query.callsign_id,
-                callsign_filter.as_deref(),
             )
             .await?,
     ))
@@ -879,7 +882,7 @@ pub(crate) async fn activity_visibility(
 ) -> HttpResult<Json<Vec<ActivityVisibility>>> {
     let user = require_user(&state, &jar).await?;
     Ok(Json(
-        state.store.activity_visibility_policies(user.id).await?,
+        state.store.activity_visibility_policies(user.id, user.global_role == "administrator").await?,
     ))
 }
 
@@ -890,38 +893,40 @@ pub(crate) async fn set_activity_visibility(
     Json(input): Json<ActivityVisibilityInput>,
 ) -> HttpResult<Json<ActivityVisibility>> {
     let user = require_user(&state, &jar).await?;
-    if !["overall", "club", "contest"].contains(&input.scope.as_str()) {
+    if !["identity", "club", "event"].contains(&input.scope.as_str()) {
         return Err(HttpError::bad_request("invalid activity visibility scope"));
     }
     if !["private", "members", "global"].contains(&input.visibility.as_str()) {
         return Err(HttpError::bad_request("invalid activity visibility"));
     }
     match input.scope.as_str() {
-        "overall" if input.scope_id.is_some() => {
-            return Err(HttpError::bad_request(
-                "overall visibility cannot have a target",
-            ));
-        }
-        "club" => {
-            let club_id = input
-                .scope_id
-                .ok_or_else(|| HttpError::bad_request("club visibility requires a club"))?;
-            if !state.store.active_club_member(user.id, club_id).await? {
-                return Err(HttpError::forbidden());
+        "identity" => {
+            let identity_id = input.scope_id;
+            let identity = state.store.managed_callsign(identity_id).await?.ok_or_else(HttpError::not_found)?;
+            if identity.identity_type == "personal" {
+                if identity.owner_user_id != Some(user.id) && user.global_role != "administrator" {
+                    return Err(HttpError::forbidden());
+                }
+                if input.visibility == "members" {
+                    return Err(HttpError::bad_request("personal callsigns support only private or global activity"));
+                }
+            } else {
+                let club_id = identity.club_id.ok_or_else(HttpError::not_found)?;
+                require_club_manager(&state, &user, club_id).await?;
             }
         }
-        "contest" => {
-            let event_id = input
-                .scope_id
-                .ok_or_else(|| HttpError::bad_request("contest visibility requires a contest"))?;
+        "club" => {
+            let club_id = input.scope_id;
+            require_club_manager(&state, &user, club_id).await?;
+        }
+        "event" => {
+            let event_id = input.scope_id;
             let club_id = state
                 .store
                 .event_club_id(event_id)
                 .await?
                 .ok_or_else(HttpError::not_found)?;
-            if !state.store.active_club_member(user.id, club_id).await? {
-                return Err(HttpError::forbidden());
-            }
+            require_club_manager(&state, &user, club_id).await?;
         }
         _ => {}
     }
@@ -971,6 +976,26 @@ pub(crate) async fn export_diagnostics(
         )
         .await?;
     Ok(Json(reports))
+}
+
+#[utoipa::path(delete, path = "/api/v1/diagnostics", tag = "activity", responses((status = 204, description = "All submitted diagnostic reports permanently removed"), (status = 403)))]
+pub(crate) async fn purge_diagnostics(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<StatusCode> {
+    let user = require_admin(&state, &jar).await?;
+    let deleted = state.store.purge_diagnostic_reports().await?;
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "diagnostics_purged",
+            "diagnostic_reports",
+            None,
+            &serde_json::json!({"deleted": deleted}),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(post, path = "/api/v1/diagnostics/retention/purge", tag = "activity", responses((status = 204, description = "Expired diagnostics and share artifacts removed"), (status = 403)))]

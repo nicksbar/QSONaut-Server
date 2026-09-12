@@ -7,6 +7,7 @@ use qsonaut_store::{NewAccessRequest, Store};
 use uuid::Uuid;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
     let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
         eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping PostgreSQL contract test");
@@ -19,7 +20,7 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
     let callsign = format!("T{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
     sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Migration test','unused','member')")
         .bind(user_id)
-        .bind(callsign)
+        .bind(&callsign)
         .execute(store.pool())
         .await
         .expect("insert test user");
@@ -27,10 +28,24 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
     let other_callsign = format!("T{}", &other_user_id.simple().to_string()[..8]).to_ascii_uppercase();
     sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Other migration test','unused','member')")
         .bind(other_user_id)
-        .bind(other_callsign)
+        .bind(&other_callsign)
         .execute(store.pool())
         .await
         .expect("insert other test user");
+    let personal_identity_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM managed_callsigns WHERE owner_user_id=$1 AND identity_type='personal'",
+    )
+    .bind(user_id)
+    .fetch_one(store.pool())
+    .await
+    .expect("provisioned personal callsign");
+    let other_identity_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM managed_callsigns WHERE owner_user_id=$1 AND identity_type='personal'",
+    )
+    .bind(other_user_id)
+    .fetch_one(store.pool())
+    .await
+    .expect("provisioned other personal callsign");
 
     let club_suffix = &user_id.simple().to_string()[..8];
     let club = store
@@ -142,8 +157,8 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
     );
 
     let private_policy = ActivityVisibilityInput {
-        scope: "overall".to_owned(),
-        scope_id: None,
+        scope: "identity".to_owned(),
+        scope_id: personal_identity_id,
         visibility: "private".to_owned(),
     };
     let first_policy = store
@@ -163,10 +178,8 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
 
     let log = QsoLogInput {
         event_id: None,
-        operating_callsign: None,
-        callsign_id: None,
-        visibility: "private".to_owned(),
-        visibility_club_id: None,
+        operating_callsign: Some(callsign.clone()),
+        callsign_id: Some(personal_identity_id),
         idempotency_key: Uuid::new_v4(),
         callsign: "W1AW".to_owned(),
         band: "20m".to_owned(),
@@ -191,6 +204,8 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
     let other_log = QsoLogInput {
         idempotency_key: Uuid::new_v4(),
         callsign: "K1ABC".to_owned(),
+        operating_callsign: Some(other_callsign.clone()),
+        callsign_id: Some(other_identity_id),
         ..log.clone()
     };
     store
@@ -201,8 +216,8 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .set_activity_visibility(
             other_user_id,
             &ActivityVisibilityInput {
-                scope: "overall".to_owned(),
-                scope_id: None,
+                scope: "identity".to_owned(),
+                scope_id: other_identity_id,
                 visibility: "global".to_owned(),
             },
         )

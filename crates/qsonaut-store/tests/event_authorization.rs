@@ -34,8 +34,6 @@ async fn event_logs_require_active_operator_and_in_window_time() {
         event_id: Some(event),
         operating_callsign: None,
         callsign_id: None,
-        visibility: "private".into(),
-        visibility_club_id: None,
         idempotency_key: Uuid::new_v4(),
         callsign: "W1AW".into(),
         band: "20m".into(),
@@ -256,10 +254,8 @@ async fn new_user_and_club_callsigns_stay_in_the_managed_registry() {
     let now = Utc::now();
     let mut personal_log = QsoLogInput {
         event_id: None,
-        operating_callsign: None,
-        callsign_id: None,
-        visibility: "private".into(),
-        visibility_club_id: None,
+        operating_callsign: Some(user_call.clone()),
+        callsign_id: Some(personal_identity),
         idempotency_key: Uuid::new_v4(),
         callsign: "W1AW".into(),
         band: "20m".into(),
@@ -272,12 +268,14 @@ async fn new_user_and_club_callsigns_stay_in_the_managed_registry() {
         points: 0,
         source: "registry-contract".into(),
     };
-    let inferred = store.create_qso_log(user, &personal_log).await.unwrap();
-    assert_eq!(inferred.callsign_id, Some(personal_identity));
-    assert_eq!(
-        inferred.operating_callsign.as_deref(),
-        Some(user_call.as_str())
-    );
+    let mut unscoped_log = personal_log.clone();
+    unscoped_log.callsign_id = None;
+    unscoped_log.operating_callsign = None;
+    unscoped_log.idempotency_key = Uuid::new_v4();
+    assert_policy_error(store.create_qso_log(user, &unscoped_log).await);
+    let accepted_personal = store.create_qso_log(user, &personal_log).await.unwrap();
+    assert_eq!(accepted_personal.callsign_id, Some(personal_identity));
+    assert_eq!(accepted_personal.operating_callsign.as_deref(), Some(user_call.as_str()));
 
     sqlx::query("INSERT INTO club_members(club_id,user_id,role) VALUES ($1,$2,'observer')")
         .bind(club)
@@ -448,8 +446,6 @@ async fn contest_definition_validates_exchange_scores_and_marks_duplicates() {
         event_id: Some(event),
         operating_callsign: Some(operating_callsign),
         callsign_id: Some(callsign_id),
-        visibility: "private".into(),
-        visibility_club_id: None,
         idempotency_key: Uuid::new_v4(),
         callsign: "W1AW".into(),
         band: "20m".into(),

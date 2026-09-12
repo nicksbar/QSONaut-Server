@@ -20,7 +20,8 @@ administrator action.
    roster maintenance, events, contest configuration, event callsigns, and
    operating assignments. An event belongs to exactly one organization.
 4. **Operator** owns their account/profile, personal callsigns, station-link
-   tokens, personal activity choices, and participation in organizations.
+   tokens, personal identity activity policies, and participation in
+   organizations.
    Operators see organizations in which they have an active membership.
 
 ## Visibility rules
@@ -40,6 +41,9 @@ administrator action.
   event setup; operators participate; observers do not transmit/log as event
   operators. Global authority is for recovery and support, not routine club
   governance.
+- The organization owns club and special callsign activity policies. Club
+  owners and coordinators are their policy owners; ordinary members receive
+  read-only effective-policy information.
 - Submitted QSO logs and opt-in hardware-validation snapshots remain visible to
   their submitting operator as personal history. Cross-operator log,
   diagnostic, station, and channel review is an administrator-only Server

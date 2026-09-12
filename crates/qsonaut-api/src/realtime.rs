@@ -416,13 +416,11 @@ mod tests {
     }
 
     #[test]
-    fn log_validation_rejects_malformed_records_but_ignores_legacy_visibility() {
+    fn log_validation_rejects_malformed_records() {
         let mut input = QsoLogInput {
             event_id: None,
             operating_callsign: None,
             callsign_id: None,
-            visibility: "global".to_owned(),
-            visibility_club_id: None,
             idempotency_key: uuid::Uuid::new_v4(),
             callsign: "W1AW".to_owned(),
             band: "20m".to_owned(),
@@ -435,6 +433,12 @@ mod tests {
             points: 1,
             source: "qsonaut".to_owned(),
         };
+        assert_eq!(
+            validate_log(&input).unwrap_err(),
+            "every QSO requires an operating callsign identity"
+        );
+        input.callsign_id = Some(uuid::Uuid::new_v4());
+        input.operating_callsign = Some("N7UF".to_owned());
         assert!(validate_log(&input).is_ok());
         input.callsign = "not a callsign".to_owned();
         assert!(validate_log(&input).is_err());
@@ -449,8 +453,6 @@ mod tests {
             event_id: Some(uuid::Uuid::new_v4()),
             operating_callsign: None,
             callsign_id: None,
-            visibility: "private".to_owned(),
-            visibility_club_id: None,
             idempotency_key: uuid::Uuid::new_v4(),
             callsign: "W1AW".to_owned(),
             band: "20m".to_owned(),
@@ -463,7 +465,7 @@ mod tests {
             points: 0,
             source: "qsonaut".to_owned(),
         };
-        assert_eq!(validate_log(&input).unwrap_err(), "event QSOs require an operating callsign identity");
+        assert_eq!(validate_log(&input).unwrap_err(), "every QSO requires an operating callsign identity");
         input.callsign_id = Some(uuid::Uuid::new_v4());
         input.operating_callsign = Some("W1CLUB".to_owned());
         input.exchange = serde_json::json!({ "fields_received": "not-an-object" });

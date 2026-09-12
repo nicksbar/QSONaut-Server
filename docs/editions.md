@@ -46,11 +46,32 @@ visibility rules. It aggregates valid four- or six-character Maidenhead grids
 from submitted QSO exchanges (`grid`, `grid_square`, or `gridsquare`) and
 places each marker at the grid-square centre. It does not geocode callsigns,
 read profile coordinates, or expose a precise operator location. The web
-console includes this map in Sharing Center, with an operator scope and an
-active-club scope.
+console includes this map in Activity and privacy, with owned-identity,
+active-club, and event scopes. Its simplified Natural Earth 110m country
+basemap, plus bundled U.S. state boundaries, is shipped with the web
+application, so the community map does not need internet access or a
+map-service account. Activity controls can also show locally generated
+Maidenhead fields, four-character square lines, U.S. county boundaries, and
+exact contact cells. At closer zoom, a locally generated worldwide
+six-character grid overlay and grid-code labels are available. Six-character
+grids are retained and displayed at their full precision when the submitted
+exchange provides them; these are visual aids, not contest completion or
+scoring logic.
 
 Public scope means useful geographic context and simple filtering, not a full
 analytics or social-map product.
+
+## Planned contest overlays
+
+Activity may later offer optional checkoff overlays when a contest definition
+supports them: grids, states, counties, or other bounded exchange dimensions.
+They should be explicitly enabled and controlled from Activity for the owning
+identity, club, or event. Overlay calculations must be limited to logs the
+viewer is already permitted to see; the overlay setting is not a visibility
+grant. The community version should keep this to simple bundled boundaries
+and basic completion state. Hosted work may add richer rule packs,
+participant-wide aggregation, validation workflows, historical progress,
+and exports.
 
 The hosted edition may provide a substantially enhanced map as a separate
 product capability. Candidate enhancements include richer time playback,
