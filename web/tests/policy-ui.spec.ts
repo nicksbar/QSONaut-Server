@@ -93,7 +93,7 @@ function response(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function installApiMock(page: Page, role: 'member' | 'administrator' = 'member') {
+async function installApiMock(page: Page, role: 'member' | 'administrator' = 'member', membershipRole: 'member' | 'coordinator' = 'member') {
   const user = role === 'administrator'
     ? { ...member, id: 'user-admin', callsign: 'K1ADM', display_name: 'K1ADM Administrator', global_role: role }
     : member;
@@ -102,14 +102,14 @@ async function installApiMock(page: Page, role: 'member' | 'administrator' = 'me
     { id: 'policy-club', scope: 'club', scope_id: club.id, visibility: 'members', updated_by_user_id: user.id, can_edit: role === 'member', updated_at: '2026-09-10T00:00:00Z' },
     { id: 'policy-event', scope: 'event', scope_id: event.id, visibility: 'private', updated_by_user_id: user.id, can_edit: role === 'member', updated_at: '2026-09-10T00:00:00Z' },
   ];
-  const calls: { method: string; path: string; body?: string }[] = [];
+  const calls: { method: string; path: string; url: string; body?: string }[] = [];
   let authenticated = false;
 
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
-    calls.push({ method: request.method(), path, body: request.postData() || undefined });
+    calls.push({ method: request.method(), path, url: request.url(), body: request.postData() || undefined });
 
     if (path === '/api/v1/auth/setup' && request.method() === 'GET') return response(route, { setup_required: false });
     if (path === '/api/v1/auth/login' && request.method() === 'POST') {
@@ -118,7 +118,7 @@ async function installApiMock(page: Page, role: 'member' | 'administrator' = 'me
     }
     if (path === '/api/v1/auth/me') return authenticated ? response(route, user) : response(route, { error: 'authentication required' }, 401);
     if (path === '/api/v1/auth/profile') return response(route, { ...profile, user });
-    if (path === '/api/v1/clubs') return response(route, [club, { ...club, id: 'club-inactive', name: 'Inactive Club', my_membership_status: 'inactive', my_role: 'member', can_manage: false }]);
+    if (path === '/api/v1/clubs') return response(route, [{ ...club, my_role: membershipRole, can_manage: membershipRole === 'coordinator' }, { ...club, id: 'club-inactive', name: 'Inactive Club', my_membership_status: 'inactive', my_role: 'member', can_manage: false }]);
     if (path === '/api/v1/events') return response(route, [event, { ...event, id: 'event-hidden', club_id: 'club-inactive', name: 'Inactive Club Event' }]);
     if (path === '/api/v1/contest-templates') return response(route, []);
     if (path === '/api/v1/identities') return response(route, [identity, clubIdentity]);
@@ -139,7 +139,7 @@ async function installApiMock(page: Page, role: 'member' | 'administrator' = 'me
     if (path === '/api/v1/activity/visibility' && request.method() === 'PUT') {
       const body = JSON.parse(request.postData() || '{}') as { scope: string; scope_id: string; visibility: string };
       const policy = policies.find((item) => item.scope === body.scope && item.scope_id === body.scope_id);
-      if (!policy || (role === 'member' && body.scope !== 'identity')) return response(route, { error: 'forbidden' }, 403);
+      if (!policy || (role === 'member' && body.scope !== 'identity' && membershipRole !== 'coordinator')) return response(route, { error: 'forbidden' }, 403);
       policy.visibility = body.visibility;
       return response(route, policy);
     }
@@ -192,6 +192,68 @@ test.describe('policy-driven operator workspace', () => {
 
     const clubPolicy = page.locator('.policy-panel select').nth(2);
     await expect(clubPolicy).toBeDisabled();
+  });
+
+  test('member operations and map scopes stay limited to active club membership', async ({ page }) => {
+    const { calls } = await installApiMock(page);
+    await signIn(page);
+
+    const operationsButton = (page.viewportSize()?.width || 0) > 900
+      ? page.getByLabel('Management console').getByRole('button', { name: /My operations/ })
+      : page.getByLabel('Compact management navigation').getByRole('button', { name: 'Operations', exact: true });
+    await operationsButton.click();
+    await expect(page.getByRole('heading', { name: 'Cascade Field Day' })).toBeVisible();
+    await expect(page.getByText('Inactive Club Event', { exact: true })).not.toBeVisible();
+
+    const activityButton = (page.viewportSize()?.width || 0) > 900
+      ? page.getByRole('button', { name: 'Sharing center' })
+      : page.getByRole('button', { name: 'Activity' });
+    await activityButton.click();
+    const mapScope = page.getByLabel('Activity scope');
+    await expect(mapScope).toBeVisible();
+    await mapScope.selectOption(`identity:${identity.id}`);
+    await expect.poll(() => calls.some((call) => call.path === '/api/v1/activity/map' && call.url.includes(`scope=identity&scope_id=${identity.id}`))).toBe(true);
+    await mapScope.selectOption(`event:${event.id}`);
+    await expect.poll(() => calls.some((call) => call.path === '/api/v1/activity/map' && call.url.includes(`scope=event&scope_id=${event.id}`))).toBe(true);
+  });
+
+  test('organization policy owners can edit club and event activity policies', async ({ page }) => {
+    const { calls } = await installApiMock(page, 'member', 'coordinator');
+    await signIn(page);
+
+    const activityButton = (page.viewportSize()?.width || 0) > 900
+      ? page.getByRole('button', { name: 'Sharing center' })
+      : page.getByRole('button', { name: 'Activity' });
+    await activityButton.click();
+    await expect(page.getByRole('heading', { name: 'Who controls each activity stream?' })).toBeVisible();
+
+    const policySelects = page.locator('.policy-panel select');
+    await expect(policySelects.nth(2)).toBeEnabled();
+    await expect(policySelects.nth(3)).toBeEnabled();
+    await policySelects.nth(2).selectOption('global');
+    await policySelects.nth(3).selectOption('global');
+    await expect.poll(() => calls.filter((call) => call.method === 'PUT' && call.path === '/api/v1/activity/visibility').length).toBe(2);
+  });
+
+  test('operator can inspect identities and reach the station workspace', async ({ page }) => {
+    await installApiMock(page);
+    await signIn(page);
+
+    const identitiesButton = (page.viewportSize()?.width || 0) > 900
+      ? page.getByLabel('Management console').getByRole('button', { name: /My identities/ })
+      : page.getByLabel('Compact management navigation').getByRole('button', { name: 'Identities', exact: true });
+    await identitiesButton.click();
+    await expect(page.getByRole('heading', { name: 'Callsign registry' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'N7UF' }).first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'N7UF' })).toBeVisible();
+    await expect(page.getByText('Personal operating identity tied to this operator account.')).toBeVisible();
+
+    const stationButton = (page.viewportSize()?.width || 0) > 900
+      ? page.getByRole('button', { name: 'My Stations' })
+      : page.getByRole('button', { name: 'Home' });
+    await stationButton.click();
+    if ((page.viewportSize()?.width || 0) <= 900) await page.getByRole('button', { name: 'CONNECT A STATION' }).click();
+    await expect(page.getByText('No station has reported in yet.')).toBeVisible();
   });
 
   test('administrator gets server data controls while member-facing policy controls stay scoped', async ({ page }) => {
