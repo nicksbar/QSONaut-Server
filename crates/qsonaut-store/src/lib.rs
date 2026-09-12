@@ -78,6 +78,26 @@ struct EventRow {
     participant_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAuthorizationApprovalRecord {
+    pub device_name: String,
+    pub client_id: String,
+    pub client_version: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceAuthorizationGrantInput<'a> {
+    pub id: Uuid,
+    pub client_id: &'a str,
+    pub device_name: &'a str,
+    pub client_version: &'a str,
+    pub device_code_hash: &'a [u8],
+    pub user_code_hash: &'a [u8],
+    pub expires_at: DateTime<Utc>,
+    pub interval_seconds: i32,
+}
+
 impl From<EventRow> for Event {
     fn from(row: EventRow) -> Self {
         let status = match row.status.as_str() {
@@ -1042,6 +1062,130 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn create_device_authorization_grant(
+        &self,
+        input: &DeviceAuthorizationGrantInput<'_>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "WITH expired AS (DELETE FROM device_authorization_grants WHERE expires_at <= now())
+             INSERT INTO device_authorization_grants
+                (id,client_id,device_name,client_version,device_code_hash,user_code_hash,expires_at,interval_seconds)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        )
+        .bind(input.id)
+        .bind(input.client_id.trim())
+        .bind(input.device_name.trim())
+        .bind(input.client_version.trim())
+        .bind(input.device_code_hash)
+        .bind(input.user_code_hash)
+        .bind(input.expires_at)
+        .bind(input.interval_seconds)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn device_authorization_for_user_code(
+        &self,
+        user_code_hash: &[u8],
+    ) -> Result<Option<DeviceAuthorizationApprovalRecord>, sqlx::Error> {
+        sqlx::query_as::<_, (String, String, String, DateTime<Utc>)>(
+            "SELECT device_name,client_id,client_version,expires_at
+             FROM device_authorization_grants
+             WHERE user_code_hash=$1 AND status='pending' AND expires_at > now()",
+        )
+        .bind(user_code_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| {
+            row.map(|(device_name, client_id, client_version, expires_at)| {
+                DeviceAuthorizationApprovalRecord {
+                    device_name,
+                    client_id,
+                    client_version,
+                    expires_at,
+                }
+            })
+        })
+    }
+
+    pub async fn decide_device_authorization(
+        &self,
+        user_id: Uuid,
+        user_code_hash: &[u8],
+        approved: bool,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(sqlx::query(
+            "UPDATE device_authorization_grants
+             SET status=CASE WHEN $3 THEN 'approved' ELSE 'denied' END,
+                 user_id=CASE WHEN $3 THEN $1 ELSE NULL END,
+                 approved_at=CASE WHEN $3 THEN now() ELSE NULL END
+             WHERE user_code_hash=$2 AND status='pending' AND expires_at > now()",
+        )
+        .bind(user_id)
+        .bind(user_code_hash)
+        .bind(approved)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
+    pub async fn device_authorization_status(
+        &self,
+        device_code_hash: &[u8],
+        client_id: &str,
+    ) -> Result<Option<(String, DateTime<Utc>, i32)>, sqlx::Error> {
+        sqlx::query_as::<_, (String, DateTime<Utc>, i32)>(
+            "SELECT status,expires_at,interval_seconds
+             FROM device_authorization_grants
+             WHERE device_code_hash=$1 AND client_id=$2",
+        )
+        .bind(device_code_hash)
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn issue_device_token_from_authorization(
+        &self,
+        device_code_hash: &[u8],
+        client_id: &str,
+        token_id: Uuid,
+        token_hash: &[u8],
+        token_expires_at: DateTime<Utc>,
+        scopes: &Value,
+    ) -> Result<Option<(Uuid, String)>, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let Some((user_id, device_name)) = sqlx::query_as::<_, (Uuid, String)>(
+            "UPDATE device_authorization_grants
+             SET status='consumed', consumed_at=now()
+             WHERE device_code_hash=$1 AND client_id=$2 AND status='approved' AND expires_at > now()
+             RETURNING user_id,device_name",
+        )
+        .bind(device_code_hash)
+        .bind(client_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            return Ok(None);
+        };
+        sqlx::query(
+            "INSERT INTO device_tokens (id,user_id,device_name,token_hash,expires_at,scopes)
+             VALUES ($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(token_id)
+        .bind(user_id)
+        .bind(device_name.trim())
+        .bind(token_hash)
+        .bind(token_expires_at)
+        .bind(scopes)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(Some((user_id, device_name)))
     }
 
     pub async fn device_tokens(

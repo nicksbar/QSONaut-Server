@@ -99,3 +99,6 @@ cargo build --release -p qsonaut-server
 
 Set `QSONAUT_DATABASE_URL`, `QSONAUT_SERVER_BIND`, and
 `QSONAUT_SERVER_WEB_ROOT=web/build` before starting the resulting binary.
+For browser-based QSONaut linking, also set
+`QSONAUT_SERVER_PUBLIC_URL` to the public HTTPS origin, such as
+`https://www.qsonaut.com`. It must not contain a path or query string.

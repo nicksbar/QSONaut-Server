@@ -16,8 +16,10 @@ use qsonaut_protocol::{
     AccessRequestDecisionInput, AccessRequestInput, ActivityMapPoint, ActivitySummary, ActivityVisibility,
     ActivityVisibilityInput, ApiError, BootstrapRequest, ChannelMessage, Club, ClubInput,
     ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
-    Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
-    DeviceTokenRecord, DiagnosticReport, DiagnosticReportInput, Event, EventInput,
+    Credentials, CurrentUser, DeviceAuthorizationApproval, DeviceAuthorizationDecisionInput,
+    DeviceAuthorizationRequest, DeviceAuthorizationResponse, DeviceAuthorizationTokenResponse,
+    DeviceCredentials, DeviceRegistration, DeviceToken, DeviceTokenRecord, DiagnosticReport,
+    DiagnosticReportInput, Event, EventInput,
     EventParticipant, EventParticipantInput, EventScore, EventStatus, EventStatusInput,
     EventUpdateInput, HealthResponse, ManagedCallsign, ManagedCallsignInput,
     ManagedCallsignStatusInput, MemberClubRole, MemberDetail, MemberInput, MemberUpdateInput,
@@ -33,7 +35,8 @@ use utoipa::OpenApi;
     paths(
         health, service_info, capabilities, access::challenge, access::lookup_callsign, access::submit, access::list, access::decide,
         auth::setup_status, auth::bootstrap, auth::login, auth::me, auth::update_me, auth::profile, auth::update_profile, auth::refresh_hamdb_profile, auth::update_my_password, auth::logout,
-        auth::device_login, auth::register_session_device, auth::session_devices,
+        auth::device_authorize, auth::device_approval, auth::decide_device_approval,
+        auth::device_login, auth::device_token, auth::register_session_device, auth::session_devices,
         auth::reissue_session_device, auth::revoke_session_device, auth::revoke_device,
         management::members, management::create_member, management::member_detail, management::update_member, management::reset_member_password,
         management::club_members, management::set_club_member, management::remove_club_member,
@@ -48,7 +51,9 @@ use utoipa::OpenApi;
     ),
     components(schemas(
         HealthResponse, ServiceInfo, ServerCapabilities, ServiceStatus, ApiError, SetupStatus, Credentials,
-        DeviceCredentials, DeviceRegistration, DeviceToken, DeviceTokenRecord,
+        DeviceCredentials, DeviceRegistration, DeviceAuthorizationRequest, DeviceAuthorizationResponse,
+        DeviceAuthorizationApproval, DeviceAuthorizationDecisionInput, DeviceAuthorizationTokenResponse,
+        DeviceToken, DeviceTokenRecord,
         BootstrapRequest, CurrentUser, AccessChallenge, AccessCallsignLookup, AccessRequest,
         AccessDecisionResult, AccessRequestInput, AccessRequestDecisionInput, MemberInput,
         ClubMembership, ClubMembershipInput, ClubJoinRequest, ClubJoinDecisionInput,
@@ -74,6 +79,7 @@ pub struct AppState {
     pub(crate) secure_cookies: bool,
     pub(crate) channel_messages: tokio::sync::broadcast::Sender<ChannelMessage>,
     pub(crate) policy: ServerPolicy,
+    pub(crate) public_base_url: String,
 }
 
 /// Public/hosted deployment policy. The public constructor is the safe default;
@@ -157,6 +163,8 @@ pub fn router_with_store_and_policy(
         secure_cookies,
         channel_messages,
         policy,
+        public_base_url: std::env::var("QSONAUT_SERVER_PUBLIC_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_owned()),
     };
     let management = Router::<AppState>::new()
         .route("/api/v1/capabilities", get(capabilities))
@@ -176,6 +184,15 @@ pub fn router_with_store_and_policy(
             get(auth::setup_status).post(auth::bootstrap),
         )
         .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/device/authorize", post(auth::device_authorize))
+        .route(
+            "/api/v1/auth/device/token",
+            post(auth::device_token),
+        )
+        .route(
+            "/api/v1/auth/device/approval",
+            get(auth::device_approval).post(auth::decide_device_approval),
+        )
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/me", patch(auth::update_me))
@@ -1138,6 +1155,214 @@ mod tests {
         assert_eq!(revoke.status(), 204);
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn browser_device_authorization_requires_approval_and_is_single_use() {
+        async fn request_token(
+            store: &Store,
+            device_code: &str,
+            client_id: &str,
+        ) -> axum::response::Response {
+            router_with_store(store.clone(), false)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/auth/device/token")
+                        .header("content-type", "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"grant_type":"urn:ietf:params:oauth:grant-type:device_code","device_code":"{device_code}","client_id":"{client_id}"}}"#
+                        )))
+                        .expect("token request"),
+                )
+                .await
+                .expect("token response")
+        }
+
+        let Ok(database_url) = std::env::var("QSONAUT_TEST_DATABASE_URL") else {
+            eprintln!("QSONAUT_TEST_DATABASE_URL is unset; skipping browser device authorization contract");
+            return;
+        };
+        let store = Store::connect(&database_url).await.expect("connect test database");
+        let user_id = Uuid::new_v4();
+        let callsign = format!("B{}", &user_id.simple().to_string()[..8]).to_ascii_uppercase();
+        let password = "browser-device-authorization-password";
+        let hash = auth::hash_password(password.to_owned()).await.expect("hash password");
+        sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Browser link member',$3,'member')")
+            .bind(user_id).bind(&callsign).bind(hash).execute(store.pool()).await
+            .expect("insert browser link test user");
+
+        let authorization = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/device/authorize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"client_id":"qsonaut-desktop","device_name":"Linux shack","client_version":"0.4.2"}"#,
+                    ))
+                    .expect("authorization request"),
+            )
+            .await
+            .expect("authorization response");
+        assert_eq!(authorization.status(), 200);
+        let authorization_body = authorization
+            .into_body()
+            .collect()
+            .await
+            .expect("authorization body")
+            .to_bytes();
+        let authorization: DeviceAuthorizationResponse =
+            serde_json::from_slice(&authorization_body).expect("authorization JSON");
+        assert!(authorization.verification_uri.starts_with("http://"));
+        assert!(authorization
+            .verification_uri_complete
+            .as_deref()
+            .is_some_and(|uri| uri.contains(&authorization.user_code)));
+
+        let pending = request_token(&store, &authorization.device_code, "qsonaut-desktop").await;
+        assert_eq!(pending.status(), 400);
+        let pending_body = pending.into_body().collect().await.expect("pending body").to_bytes();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&pending_body).expect("pending JSON")["error"], "authorization_pending");
+
+        let login = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"callsign":"{callsign}","password":"{password}"}}"#
+                    )))
+                    .expect("login request"),
+            )
+            .await
+            .expect("login response");
+        assert_eq!(login.status(), 200);
+        let cookie = login
+            .headers()
+            .get("set-cookie")
+            .expect("session cookie")
+            .to_str()
+            .expect("cookie text")
+            .split(';')
+            .next()
+            .expect("cookie value")
+            .to_owned();
+
+        let approval = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/auth/device/approval?user_code={}",
+                        authorization.user_code
+                    ))
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .expect("approval lookup request"),
+            )
+            .await
+            .expect("approval lookup response");
+        assert_eq!(approval.status(), 200);
+        let approval: DeviceAuthorizationApproval = serde_json::from_slice(
+            &approval.into_body().collect().await.expect("approval body").to_bytes(),
+        )
+        .expect("approval JSON");
+        assert_eq!(approval.device_name, "Linux shack");
+        assert_eq!(approval.client_id, "qsonaut-desktop");
+
+        let approved = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/device/approval")
+                    .header("content-type", "application/json")
+                    .header("cookie", &cookie)
+                    .body(Body::from(format!(
+                        r#"{{"user_code":"{}","approved":true}}"#,
+                        authorization.user_code
+                    )))
+                    .expect("approval decision request"),
+            )
+            .await
+            .expect("approval decision response");
+        assert_eq!(approved.status(), 204);
+
+        let token = request_token(&store, &authorization.device_code, "qsonaut-desktop").await;
+        assert_eq!(token.status(), 200);
+        let token: DeviceAuthorizationTokenResponse = serde_json::from_slice(
+            &token.into_body().collect().await.expect("token body").to_bytes(),
+        )
+        .expect("token JSON");
+        assert_eq!(token.token_type, "Bearer");
+        assert!(!token.access_token.is_empty());
+
+        let replay = request_token(&store, &authorization.device_code, "qsonaut-desktop").await;
+        assert_eq!(replay.status(), 400);
+        let replay_body = replay.into_body().collect().await.expect("replay body").to_bytes();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&replay_body).expect("replay JSON")["error"], "expired_token");
+        let authenticated = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/v1/auth/device")
+                    .header("authorization", format!("Bearer {}", token.access_token))
+                    .body(Body::empty())
+                    .expect("device-authenticated request"),
+            )
+            .await
+            .expect("device-authenticated response");
+        assert_eq!(authenticated.status(), 204);
+
+        let denied_authorization = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/device/authorize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"client_id":"qsonaut-desktop","device_name":"Denied station","client_version":"0.4.2"}"#,
+                    ))
+                    .expect("denied authorization request"),
+            )
+            .await
+            .expect("denied authorization response");
+        let denied: DeviceAuthorizationResponse = serde_json::from_slice(
+            &denied_authorization.into_body().collect().await.expect("denied body").to_bytes(),
+        )
+        .expect("denied authorization JSON");
+        let denied_response = router_with_store(store.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/device/approval")
+                    .header("content-type", "application/json")
+                    .header("cookie", &cookie)
+                    .body(Body::from(format!(
+                        r#"{{"user_code":"{}","approved":false}}"#,
+                        denied.user_code
+                    )))
+                    .expect("denial request"),
+            )
+            .await
+            .expect("denial response");
+        assert_eq!(denied_response.status(), 204);
+        let denied_token = request_token(&store, &denied.device_code, "qsonaut-desktop").await;
+        assert_eq!(denied_token.status(), 400);
+        let denied_body = denied_token.into_body().collect().await.expect("denied token body").to_bytes();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&denied_body).expect("denied token JSON")["error"], "access_denied");
+
+        sqlx::query("DELETE FROM managed_callsigns WHERE owner_user_id=$1")
+            .bind(user_id)
+            .execute(store.pool())
+            .await
+            .expect("cleanup browser link test identity");
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(store.pool())
+            .await
+            .expect("cleanup browser link test user");
+    }
+
     #[test]
     fn openapi_covers_management_and_authentication_routes() {
         let document = ApiDoc::openapi();
@@ -1151,6 +1376,9 @@ mod tests {
             "/api/v1/access/requests",
             "/api/v1/access/requests/{request_id}",
             "/api/v1/auth/device",
+            "/api/v1/auth/device/authorize",
+            "/api/v1/auth/device/token",
+            "/api/v1/auth/device/approval",
             "/api/v1/auth/device/session",
             "/api/v1/auth/devices",
             "/api/v1/auth/devices/{token_id}",

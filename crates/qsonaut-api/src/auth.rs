@@ -5,23 +5,29 @@ use crate::{
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header::AUTHORIZATION},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use qsonaut_protocol::{
-    BootstrapRequest, Credentials, CurrentUser, DeviceCredentials, DeviceRegistration, DeviceToken,
+    BootstrapRequest, Credentials, CurrentUser, DeviceAuthorizationApproval,
+    DeviceAuthorizationDecisionInput, DeviceAuthorizationRequest, DeviceAuthorizationResponse,
+    DeviceAuthorizationTokenResponse, DeviceCredentials, DeviceRegistration, DeviceToken,
     DeviceTokenRecord, PasswordResetInput, ProfileUpdateInput, SetupStatus, UserProfile,
 };
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use time::Duration;
 use uuid::Uuid;
+use qsonaut_store::DeviceAuthorizationGrantInput;
 
 const COOKIE_NAME: &str = "qsonaut_session";
+const DEVICE_AUTHORIZATION_TTL_MINUTES: i64 = 10;
+const DEVICE_AUTHORIZATION_INTERVAL_SECONDS: u64 = 5;
+const DEVICE_USER_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub(crate) const DEVICE_SCOPES: &[&str] = &[
     "events:read",
     "messages:read",
@@ -66,6 +72,229 @@ pub(crate) async fn login(
 ) -> HttpResult<impl IntoResponse> {
     let user = verify_credentials(&state, input).await?;
     Ok((create_session(&state, jar, user.id).await?, Json(user)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/device/authorize",
+    tag = "authentication",
+    request_body = DeviceAuthorizationRequest,
+    responses((status = 200, body = DeviceAuthorizationResponse), (status = 400, description = "Invalid device authorization request"))
+)]
+pub(crate) async fn device_authorize(
+    State(state): State<AppState>,
+    Json(input): Json<DeviceAuthorizationRequest>,
+) -> HttpResult<Json<DeviceAuthorizationResponse>> {
+    let client_id = validate_device_authorization_field(&input.client_id, 80, "client id")?;
+    let device_name = validate_device_authorization_field(&input.device_name, 100, "device name")?;
+    let client_version =
+        validate_device_authorization_field(&input.client_version, 40, "client version")?;
+    let mut device_bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut device_bytes);
+    let device_code = URL_SAFE_NO_PAD.encode(device_bytes);
+    let user_code = generate_user_code();
+    let device_code_hash = token_hash(&device_code);
+    let user_code_hash = token_hash(&user_code);
+    let expires_at = Utc::now() + ChronoDuration::minutes(DEVICE_AUTHORIZATION_TTL_MINUTES);
+    state
+        .store
+        .create_device_authorization_grant(&DeviceAuthorizationGrantInput {
+            id: Uuid::new_v4(),
+            client_id,
+            device_name,
+            client_version,
+            device_code_hash: &device_code_hash,
+            user_code_hash: &user_code_hash,
+            expires_at,
+            interval_seconds: i32::try_from(DEVICE_AUTHORIZATION_INTERVAL_SECONDS)
+                .expect("constant fits i32"),
+        })
+        .await?;
+    let verification_uri = format!(
+        "{}/link",
+        state.public_base_url.trim_end_matches('/')
+    );
+    let verification_uri_complete = Some(format!("{verification_uri}?user_code={user_code}"));
+    Ok(Json(DeviceAuthorizationResponse {
+        device_code,
+        user_code,
+        verification_uri,
+        verification_uri_complete,
+        expires_in: u64::try_from(DEVICE_AUTHORIZATION_TTL_MINUTES * 60)
+            .expect("constant fits u64"),
+        interval: DEVICE_AUTHORIZATION_INTERVAL_SECONDS,
+    }))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct DeviceAuthorizationLookup {
+    user_code: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/device/approval",
+    tag = "authentication",
+    params(("user_code" = String, Query)),
+    responses((status = 200, body = DeviceAuthorizationApproval), (status = 401), (status = 404, description = "Authorization request not found or expired"))
+)]
+pub(crate) async fn device_approval(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::cookie::CookieJar,
+    Query(query): Query<DeviceAuthorizationLookup>,
+) -> HttpResult<Json<DeviceAuthorizationApproval>> {
+    let _user = require_user(&state, &jar).await?;
+    let user_code = normalize_user_code(&query.user_code);
+    if user_code.is_empty() {
+        return Err(HttpError::not_found());
+    }
+    let approval = state
+        .store
+        .device_authorization_for_user_code(&token_hash(&user_code))
+        .await?
+        .ok_or_else(HttpError::not_found)?;
+    Ok(Json(DeviceAuthorizationApproval {
+        device_name: approval.device_name,
+        client_id: approval.client_id,
+        client_version: approval.client_version,
+        expires_at: approval.expires_at,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/device/approval",
+    tag = "authentication",
+    request_body = DeviceAuthorizationDecisionInput,
+    responses((status = 204), (status = 401), (status = 404, description = "Authorization request not found or expired"))
+)]
+pub(crate) async fn decide_device_approval(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::cookie::CookieJar,
+    Json(input): Json<DeviceAuthorizationDecisionInput>,
+) -> HttpResult<StatusCode> {
+    let user = require_user(&state, &jar).await?;
+    let user_code = normalize_user_code(&input.user_code);
+    if user_code.is_empty()
+        || !state
+            .store
+            .decide_device_authorization(user.id, &token_hash(&user_code), input.approved)
+            .await?
+    {
+        return Err(HttpError::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub(crate) struct DeviceTokenRequest {
+    grant_type: String,
+    device_code: String,
+    client_id: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/device/token",
+    tag = "authentication",
+    request_body = DeviceTokenRequest,
+    responses((status = 200, body = DeviceAuthorizationTokenResponse), (status = 400, description = "Device authorization is pending, denied, expired, or invalid"))
+)]
+pub(crate) async fn device_token(
+    State(state): State<AppState>,
+    Json(input): Json<DeviceTokenRequest>,
+) -> HttpResult<Response> {
+    if input.grant_type != "urn:ietf:params:oauth:grant-type:device_code" {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "invalid_grant"));
+    }
+    let device_code = input.device_code.trim();
+    let client_id = input.client_id.trim();
+    if device_code.is_empty() || client_id.is_empty() {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "invalid_grant"));
+    }
+    let Some((status, expires_at, _interval)) = state
+        .store
+        .device_authorization_status(&token_hash(device_code), client_id)
+        .await?
+    else {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "expired_token"));
+    };
+    if expires_at <= Utc::now() || status == "consumed" {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "expired_token"));
+    }
+    if status == "pending" {
+        return Ok(device_flow_error(
+            StatusCode::BAD_REQUEST,
+            "authorization_pending",
+        ));
+    }
+    if status == "denied" {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "access_denied"));
+    }
+    let mut bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let access_token = URL_SAFE_NO_PAD.encode(bytes);
+    let expires_in = u64::try_from(ChronoDuration::days(90).num_seconds())
+        .expect("constant fits u64");
+    let scopes = serde_json::json!(DEVICE_SCOPES);
+    let Some((user_id, _device_name)) = state
+        .store
+        .issue_device_token_from_authorization(
+            &token_hash(device_code),
+            client_id,
+            Uuid::new_v4(),
+            &token_hash(&access_token),
+            Utc::now() + ChronoDuration::seconds(i64::try_from(expires_in).expect("fits i64")),
+            &scopes,
+        )
+        .await?
+    else {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "expired_token"));
+    };
+    if state.store.user(user_id).await?.is_none() {
+        return Ok(device_flow_error(StatusCode::BAD_REQUEST, "expired_token"));
+    }
+    Ok(Json(DeviceAuthorizationTokenResponse {
+        access_token,
+        token_type: "Bearer".to_owned(),
+        expires_in,
+    })
+    .into_response())
+}
+
+fn device_flow_error(status: StatusCode, error: &'static str) -> Response {
+    (status, Json(serde_json::json!({ "error": error }))).into_response()
+}
+
+fn validate_device_authorization_field<'a>(
+    value: &'a str,
+    max_length: usize,
+    name: &str,
+) -> HttpResult<&'a str> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > max_length {
+        return Err(HttpError::bad_request(format!(
+            "{name} must contain 1 to {max_length} characters"
+        )));
+    }
+    Ok(value)
+}
+
+fn generate_user_code() -> String {
+    let mut bytes = [0_u8; 8];
+    rand::rng().fill_bytes(&mut bytes);
+    let mut code = String::with_capacity(9);
+    for (index, byte) in bytes.into_iter().enumerate() {
+        if index == 4 {
+            code.push('-');
+        }
+        code.push(DEVICE_USER_CODE_ALPHABET[usize::from(byte) % DEVICE_USER_CODE_ALPHABET.len()] as char);
+    }
+    code
+}
+
+fn normalize_user_code(value: &str) -> String {
+    value.trim().to_ascii_uppercase()
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/device", tag = "authentication", request_body = DeviceCredentials, responses((status = 200, body = DeviceToken), (status = 401, description = "Invalid credentials")))]

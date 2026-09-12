@@ -5,10 +5,181 @@ export type User = {
   global_role: string;
 };
 
+export type DeviceAuthorizationApproval = {
+  device_name: string;
+  client_id: string;
+  client_version: string;
+  expires_at: string;
+};
+
+export type GovernancePosition = {
+  id: string;
+  club_id: string;
+  name: string;
+  position_type: 'officer' | 'board';
+  seats: number;
+  term_years: number;
+  election_parity: 'any' | 'even' | 'odd';
+  description: string;
+};
+
+export type GovernanceAssignment = {
+  id: string;
+  position_id: string;
+  user_id: string;
+  callsign: string;
+  display_name: string;
+  seat_number: number;
+  starts_on: string;
+  ends_on: string;
+  selection_method: 'elected' | 'appointed' | 'acting';
+};
+
+export type GovernanceElection = {
+  id: string;
+  club_id: string;
+  title: string;
+  election_year: number;
+  status: 'planned' | 'nominations' | 'voting' | 'closed' | 'certified' | 'cancelled';
+  opens_at: string | null;
+  closes_at: string | null;
+  notes: string;
+  position_ids: string[];
+};
+
+export type Governance = {
+  positions: GovernancePosition[];
+  assignments: GovernanceAssignment[];
+  elections: GovernanceElection[];
+};
 export type ServerCapabilities = {
   edition: string;
   max_clubs: number | null;
   features: string[];
+};
+
+export type ServerBillingSettings = {
+  platform_fee_basis_points: number;
+  donations_enabled: boolean;
+  club_dues_enabled: boolean;
+  currency: string;
+  provider_status: 'not_configured' | 'sandbox' | 'live';
+  updated_by: string | null;
+  updated_at: string;
+};
+
+export type DeploymentReadiness = {
+  secure_cookies: boolean;
+  bind_address: string;
+  websocket_path: string;
+  database: string;
+  private_migrations: string;
+  online_map_tiles: boolean;
+  payment_provider: string;
+  email_provider: string;
+  oauth_provider: string;
+};
+
+export type HostedChangeRecord = {
+  id: string;
+  actor_user_id: string;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type PaymentFlowStatus = {
+  provider_status: string;
+  checkout_enabled: boolean;
+  donations_enabled: boolean;
+  club_dues_enabled: boolean;
+  platform_fee_basis_points: number;
+  currency: string;
+  gates: { key: string; status: string; label: string }[];
+  blockers: { code: string; message: string }[];
+  offers: { key: string; purpose: string; label: string; ownership: string; description: string }[];
+};
+
+export type PaymentEntitlement = {
+  id: string;
+  capability_key: string;
+  club_id: string | null;
+  status: string;
+  starts_at: string;
+  ends_at: string | null;
+};
+
+export type PaymentOperationsSummary = {
+  blocked_intents: number;
+  pending_intents: number;
+  succeeded_intents: number;
+  unprocessed_provider_events: number;
+  ready_club_destinations: number;
+  active_entitlements: number;
+};
+
+export type ClubPaymentMethod = {
+  id: string;
+  club_id: string;
+  provider: 'paypal' | 'amazon_pay' | 'zelle' | 'external_link' | 'offline' | 'other';
+  method_kind: 'automated' | 'external_link' | 'manual';
+  display_label: string;
+  public_reference: string | null;
+  payment_url: string | null;
+  instructions: string;
+  status: 'not_configured' | 'pending_verification' | 'ready' | 'disabled';
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaymentIntent = {
+  id: string;
+  payer_user_id: string;
+  club_id: string | null;
+  payment_destination_id: string | null;
+  purpose: string;
+  offer_key: string;
+  amount_minor: number;
+  currency: string;
+  platform_fee_minor: number;
+  club_amount_minor: number;
+  status: 'blocked_provider_not_configured' | 'created' | 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'refunded';
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaymentStatusEvent = {
+  id: string;
+  previous_status: string | null;
+  next_status: string;
+  source: 'system' | 'member' | 'manager' | 'provider' | 'migration';
+  actor_user_id: string | null;
+  note: string;
+  created_at: string;
+};
+
+export type ClubPaymentRecord = {
+  id: string;
+  payer_user_id: string;
+  callsign: string;
+  display_name: string;
+  payment_destination_id: string;
+  method_label: string;
+  method_kind: string;
+  amount_minor: number;
+  currency: string;
+  platform_fee_minor: number;
+  club_amount_minor: number;
+  status: string;
+  created_at: string;
+  reconciliation_outcome: string | null;
+  reconciliation_reference: string | null;
+  reconciliation_note: string | null;
+  mark_dues_current: boolean | null;
+  reconciled_at: string | null;
 };
 
 export type AccessChallenge = {
@@ -93,6 +264,13 @@ export type ActivityMapPoint = {
   longitude: number;
   qso_count: number;
   last_qso_at: string;
+};
+
+export type HostedMapConfig = {
+  online_tiles: boolean;
+  tile_url: string | null;
+  attribution: string | null;
+  max_zoom: number;
 };
 
 export type ShareLinkRecord = {

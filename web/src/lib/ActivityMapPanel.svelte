@@ -4,9 +4,9 @@
   import { feature } from 'topojson-client';
   import world from 'world-atlas/countries-110m.json';
   import usStates from 'us-atlas/states-10m.json';
-  import type { GeoJSON as LeafletGeoJSON, LayerGroup, Map as LeafletMap } from 'leaflet';
+  import type { GeoJSON as LeafletGeoJSON, LayerGroup, Map as LeafletMap, TileLayer } from 'leaflet';
   import { api } from './api';
-  import type { ActivityMapPoint, Club, Event, ManagedCallsign } from './types';
+  import type { ActivityMapPoint, Club, Event, HostedMapConfig, ManagedCallsign } from './types';
 
   let { clubs, identities, events }: { clubs: Club[]; identities: ManagedCallsign[]; events: Event[] } = $props();
   let scope = $state('overall');
@@ -26,6 +26,7 @@
   let leaflet: typeof import('leaflet') | null = null;
   let map: LeafletMap | null = null;
   let landLayer: LeafletGeoJSON | null = null;
+  let tileLayer: TileLayer | null = null;
   let countryLayer: LeafletGeoJSON | null = null;
   let stateLayer: LeafletGeoJSON | null = null;
   let countyLayer: LeafletGeoJSON | null = null;
@@ -227,12 +228,21 @@
 
   onMount(() => {
     let disposed = false;
-    void import('leaflet').then((module) => {
+    void import('leaflet').then(async (module) => {
       if (disposed || !mapElement) return;
       leaflet = module;
-      map = module.map(mapElement, { minZoom: 2, maxZoom: 12, worldCopyJump: true }).setView([25, 0], 2);
+      let hostedMap: HostedMapConfig | null = null;
+      try { hostedMap = await api<HostedMapConfig>('/api/v1/hosted/map-config'); } catch { /* public/community server */ }
+      if (disposed || !mapElement) return;
+      map = module.map(mapElement, { minZoom: 2, maxZoom: hostedMap?.max_zoom || 12, worldCopyJump: true }).setView([25, 0], 2);
+      if (hostedMap?.online_tiles && hostedMap.tile_url && hostedMap.attribution) {
+        tileLayer = module.tileLayer(hostedMap.tile_url, {
+          attribution: hostedMap.attribution,
+          maxZoom: hostedMap.max_zoom,
+        }).addTo(map);
+      }
       landLayer = module.geoJSON(feature(world as never, 'land'), {
-        style: { color: '#59747a', weight: 0.8, fillColor: '#17333a', fillOpacity: 0.95 },
+        style: { color: '#59747a', weight: 0.8, fillColor: '#17333a', fillOpacity: hostedMap?.online_tiles ? 0.35 : 0.95 },
       }).addTo(map);
       countryLayer = module.geoJSON(feature(world as never, 'countries'), {
         style: { color: '#76939a', weight: 0.65, fill: false },
@@ -259,7 +269,7 @@
       updateLabelVisibility();
       renderPoints();
     });
-    return () => { disposed = true; map?.off('zoomend', updateLabelVisibility); map?.off('zoomend moveend', updateFineGrid); map?.remove(); map = null; landLayer = null; countryLayer = null; stateLayer = null; countyLayer = null; gridFieldsLayer = null; gridSquaresLayer = null; exactGridLayer = null; fineGridLayer = null; markerLayer = null; };
+    return () => { disposed = true; map?.off('zoomend', updateLabelVisibility); map?.off('zoomend moveend', updateFineGrid); map?.remove(); map = null; tileLayer = null; landLayer = null; countryLayer = null; stateLayer = null; countyLayer = null; gridFieldsLayer = null; gridSquaresLayer = null; exactGridLayer = null; fineGridLayer = null; markerLayer = null; };
   });
 
   $effect(() => { scope; void load(); });

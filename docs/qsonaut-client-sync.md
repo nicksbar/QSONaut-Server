@@ -56,11 +56,22 @@ points, and scoring-explanation fields.
 
 ## Device authentication
 
-Signed-in operators can open **Station link** in the management UI, name the
-QSONaut installation, and create a token through the browser session. The token
-is displayed once for pasting into QSONaut's Server tab. The browser uses
-`POST /api/v1/auth/device/session`; it does not expose the session cookie to the
-native client.
+QSONaut desktop uses a browser-based device authorization flow. It starts a
+request with `POST /api/v1/auth/device/authorize`, receiving a short-lived
+device code, human-readable user code, and an absolute `verification_uri`.
+The operator opens the URI, signs in to the same server, and approves the named
+installation. QSONaut polls `POST /api/v1/auth/device/token` until approval and
+receives an access token; the browser never exposes its session cookie or the
+native token.
+
+The server serves the approval page at `/link`. Set
+`QSONAUT_SERVER_PUBLIC_URL` to the externally reachable origin (for example
+`https://www.qsonaut.com`) so the URI launched by QSONaut is correct. Local
+development defaults to `http://localhost:8080`.
+
+Signed-in operators may still use **Station link** in the management UI to
+create a manually copyable token as a fallback for older clients. The token is
+displayed once and the server stores only its hash.
 
 Native clients exchange their callsign, password, and a local device name at
 `POST /api/v1/auth/device`. The returned 90-day bearer token is shown once and
