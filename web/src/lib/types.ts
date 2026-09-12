@@ -52,6 +52,14 @@ export type Governance = {
   assignments: GovernanceAssignment[];
   elections: GovernanceElection[];
 };
+export type GovernanceCalendarEntry = {
+  id: string;
+  kind: 'election_opens' | 'election_closes' | 'assignment_ends' | 'membership_renewal';
+  title: string;
+  occurs_at: string;
+  all_day: boolean;
+  detail: string;
+};
 export type ServerCapabilities = {
   edition: string;
   max_clubs: number | null;
