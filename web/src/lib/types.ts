@@ -86,6 +86,8 @@ export type DeploymentReadiness = {
   payment_provider: string;
   email_provider: string;
   oauth_provider: string;
+  abuse_protection: string;
+  trusted_proxy_mode: boolean;
 };
 
 export type HostedChangeRecord = {
