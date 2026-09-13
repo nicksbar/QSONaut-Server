@@ -30,11 +30,13 @@ fn maidenhead_center(grid: &str) -> Option<(String, f64, f64)> {
         || !(b'A'..=b'R').contains(&bytes[1])
         || !bytes[2].is_ascii_digit()
         || !bytes[3].is_ascii_digit()
-        || (bytes.len() == 6 && (!(b'A'..=b'X').contains(&bytes[4]) || !(b'A'..=b'X').contains(&bytes[5])))
+        || (bytes.len() == 6
+            && (!(b'A'..=b'X').contains(&bytes[4]) || !(b'A'..=b'X').contains(&bytes[5])))
     {
         return None;
     }
-    let mut longitude = -180.0 + f64::from(bytes[0] - b'A') * 20.0 + f64::from(bytes[2] - b'0') * 2.0;
+    let mut longitude =
+        -180.0 + f64::from(bytes[0] - b'A') * 20.0 + f64::from(bytes[2] - b'0') * 2.0;
     let mut latitude = -90.0 + f64::from(bytes[1] - b'A') * 10.0 + f64::from(bytes[3] - b'0');
     let (width, height) = if bytes.len() == 6 {
         longitude += f64::from(bytes[4] - b'A') * (5.0 / 60.0);
@@ -55,9 +57,11 @@ fn grid_from_exchange(exchange: &Value) -> Option<&str> {
             ["fields_received", "fields_sent"]
                 .into_iter()
                 .find_map(|section| {
-                    exchange
-                        .get(section)
-                        .and_then(|fields| GRID_KEYS.into_iter().find_map(|key| fields.get(key).and_then(Value::as_str)))
+                    exchange.get(section).and_then(|fields| {
+                        GRID_KEYS
+                            .into_iter()
+                            .find_map(|key| fields.get(key).and_then(Value::as_str))
+                    })
                 })
         })
 }
@@ -1860,7 +1864,9 @@ impl Store {
         is_administrator: bool,
         limit: i64,
     ) -> Result<Vec<QsoLog>, sqlx::Error> {
-        let query = qso_log_query("FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN managed_callsigns identity ON identity.id=q.callsign_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.event_id=q.event_id LIMIT 1) event_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.identity_id=q.callsign_id LIMIT 1) identity_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.club_id=COALESCE(identity.club_id,e.club_id) LIMIT 1) club_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(event_policy.visibility,identity_policy.visibility,club_policy.visibility)='global' OR (COALESCE(event_policy.visibility,identity_policy.visibility,club_policy.visibility)='members' AND COALESCE(identity.club_id,e.club_id) IS NOT NULL AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=COALESCE(identity.club_id,e.club_id) AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3");
+        let query = qso_log_query(
+            "FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN managed_callsigns identity ON identity.id=q.callsign_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.event_id=q.event_id LIMIT 1) event_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.identity_id=q.callsign_id LIMIT 1) identity_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.club_id=COALESCE(identity.club_id,e.club_id) LIMIT 1) club_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(event_policy.visibility,identity_policy.visibility,club_policy.visibility)='global' OR (COALESCE(event_policy.visibility,identity_policy.visibility,club_policy.visibility)='members' AND COALESCE(identity.club_id,e.club_id) IS NOT NULL AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=COALESCE(identity.club_id,e.club_id) AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3",
+        );
         sqlx::query_as::<_, QsoLogRow>(&query)
             .bind(is_administrator)
             .bind(viewer_id)
@@ -1877,7 +1883,9 @@ impl Store {
         scope: &str,
         scope_id: Option<Uuid>,
     ) -> Result<Vec<ActivityMapPoint>, sqlx::Error> {
-        let mut logs = self.qso_logs_for_viewer(viewer_id, is_administrator, 1_000).await?;
+        let mut logs = self
+            .qso_logs_for_viewer(viewer_id, is_administrator, 1_000)
+            .await?;
         let identities = self
             .managed_callsigns()
             .await?
@@ -1907,7 +1915,8 @@ impl Store {
                     .map(|event| event.id)
                     .collect::<std::collections::HashSet<_>>();
                 logs.retain(|log| {
-                    log.event_id.is_some_and(|event_id| event_ids.contains(&event_id))
+                    log.event_id
+                        .is_some_and(|event_id| event_ids.contains(&event_id))
                         || log
                             .callsign_id
                             .and_then(|identity_id| identities.get(&identity_id))
@@ -1944,7 +1953,12 @@ impl Store {
                 });
         }
         let mut points = points.into_values().collect::<Vec<_>>();
-        points.sort_by(|left, right| right.qso_count.cmp(&left.qso_count).then_with(|| right.last_qso_at.cmp(&left.last_qso_at)));
+        points.sort_by(|left, right| {
+            right
+                .qso_count
+                .cmp(&left.qso_count)
+                .then_with(|| right.last_qso_at.cmp(&left.last_qso_at))
+        });
         Ok(points)
     }
 
@@ -1956,7 +1970,9 @@ impl Store {
         // Retries are expected when a native client reconnects. Resolve the
         // existing record before inserting so a successful retry is a normal
         // success response rather than a unique-constraint error.
-        let existing_query = qso_log_query("FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2");
+        let existing_query = qso_log_query(
+            "FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2",
+        );
         if let Some(existing) = sqlx::query_as::<_, QsoLogRow>(&existing_query)
             .bind(user_id)
             .bind(input.idempotency_key)
@@ -1970,11 +1986,20 @@ impl Store {
             .bind(id).bind(user_id).bind(input.event_id).bind(input.operating_callsign.as_deref().map(str::trim).map(str::to_ascii_uppercase)).bind(input.callsign_id).bind(input.idempotency_key).bind(input.callsign.trim().to_ascii_uppercase()).bind(input.band.trim()).bind(input.mode.trim().to_ascii_uppercase()).bind(input.frequency_hz).bind(input.occurred_at).bind(input.rst_sent.as_deref()).bind(input.rst_received.as_deref()).bind(&input.exchange).bind(input.points).bind(input.source.trim()).execute(&self.pool).await?;
         if insert.rows_affected() == 0 {
             return sqlx::query_as::<_, QsoLogRow>(&existing_query)
-                .bind(user_id).bind(input.idempotency_key).fetch_one(&self.pool).await.map(Into::into);
+                .bind(user_id)
+                .bind(input.idempotency_key)
+                .fetch_one(&self.pool)
+                .await
+                .map(Into::into);
         }
-        let inserted_query = qso_log_query("FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1");
+        let inserted_query = qso_log_query(
+            "FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1",
+        );
         sqlx::query_as::<_, QsoLogRow>(&inserted_query)
-            .bind(id).fetch_one(&self.pool).await.map(QsoLog::from)
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .map(QsoLog::from)
     }
 
     pub async fn qso_log_owner(&self, log_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
@@ -2030,7 +2055,9 @@ impl Store {
     }
 
     pub async fn shared_qso_log(&self, token_hash: &[u8]) -> Result<Option<QsoLog>, sqlx::Error> {
-        let query = qso_log_query("FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()");
+        let query = qso_log_query(
+            "FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()",
+        );
         sqlx::query_as::<_, QsoLogRow>(&query)
             .bind(token_hash)
             .fetch_optional(&self.pool)
@@ -2134,13 +2161,17 @@ mod tests {
 
     #[test]
     fn maidenhead_grid_centres_are_validated_and_stable() {
-        let (grid, latitude, longitude) = maidenhead_center("cn87").expect("valid four-character grid");
+        let (grid, latitude, longitude) =
+            maidenhead_center("cn87").expect("valid four-character grid");
         assert_eq!(grid, "CN87");
         assert!((latitude - 47.5).abs() < f64::EPSILON);
         assert!((longitude + 123.0).abs() < f64::EPSILON);
         assert!(maidenhead_center("CN87XX").is_some());
         assert!(maidenhead_center("not-a-grid").is_none());
         assert!(maidenhead_center("CN8").is_none());
-        assert_eq!(grid_from_exchange(&serde_json::json!({"fields_received":{"grid":"FN42"}})), Some("FN42"));
+        assert_eq!(
+            grid_from_exchange(&serde_json::json!({"fields_received":{"grid":"FN42"}})),
+            Some("FN42")
+        );
     }
 }

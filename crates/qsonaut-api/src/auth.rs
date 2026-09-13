@@ -18,11 +18,11 @@ use qsonaut_protocol::{
     DeviceAuthorizationTokenResponse, DeviceCredentials, DeviceRegistration, DeviceToken,
     DeviceTokenRecord, PasswordResetInput, ProfileUpdateInput, SetupStatus, UserProfile,
 };
+use qsonaut_store::DeviceAuthorizationGrantInput;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use time::Duration;
 use uuid::Uuid;
-use qsonaut_store::DeviceAuthorizationGrantInput;
 
 const COOKIE_NAME: &str = "qsonaut_session";
 const DEVICE_AUTHORIZATION_TTL_MINUTES: i64 = 10;
@@ -110,10 +110,7 @@ pub(crate) async fn device_authorize(
                 .expect("constant fits i32"),
         })
         .await?;
-    let verification_uri = format!(
-        "{}/link",
-        state.public_base_url.trim_end_matches('/')
-    );
+    let verification_uri = format!("{}/link", state.public_base_url.trim_end_matches('/'));
     let verification_uri_complete = Some(format!("{verification_uri}?user_code={user_code}"));
     Ok(Json(DeviceAuthorizationResponse {
         device_code,
@@ -234,8 +231,8 @@ pub(crate) async fn device_token(
     let mut bytes = [0_u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     let access_token = URL_SAFE_NO_PAD.encode(bytes);
-    let expires_in = u64::try_from(ChronoDuration::days(90).num_seconds())
-        .expect("constant fits u64");
+    let expires_in =
+        u64::try_from(ChronoDuration::days(90).num_seconds()).expect("constant fits u64");
     let scopes = serde_json::json!(DEVICE_SCOPES);
     let Some((user_id, _device_name)) = state
         .store
@@ -288,7 +285,9 @@ fn generate_user_code() -> String {
         if index == 4 {
             code.push('-');
         }
-        code.push(DEVICE_USER_CODE_ALPHABET[usize::from(byte) % DEVICE_USER_CODE_ALPHABET.len()] as char);
+        code.push(
+            DEVICE_USER_CODE_ALPHABET[usize::from(byte) % DEVICE_USER_CODE_ALPHABET.len()] as char,
+        );
     }
     code
 }

@@ -13,8 +13,8 @@ use axum::{
     response::Response,
 };
 use qsonaut_protocol::{
-    API_VERSION, ClientEnvelope, ClientMessage, CurrentUser, ServerEnvelope,
-    ServerMessage, StationPresenceInput,
+    API_VERSION, ClientEnvelope, ClientMessage, CurrentUser, ServerEnvelope, ServerMessage,
+    StationPresenceInput,
 };
 
 pub(crate) async fn connect(
@@ -321,7 +321,6 @@ fn validate_presence(input: &StationPresenceInput) -> Result<(), String> {
     Ok(())
 }
 
-
 async fn send(socket: &mut WebSocket, envelope: ServerEnvelope) -> Result<(), axum::Error> {
     let text = serde_json::to_string(&envelope).map_err(axum::Error::new)?;
     socket.send(Message::Text(text.into())).await
@@ -465,10 +464,16 @@ mod tests {
             points: 0,
             source: "qsonaut".to_owned(),
         };
-        assert_eq!(validate_log(&input).unwrap_err(), "every QSO requires an operating callsign identity");
+        assert_eq!(
+            validate_log(&input).unwrap_err(),
+            "every QSO requires an operating callsign identity"
+        );
         input.callsign_id = Some(uuid::Uuid::new_v4());
         input.operating_callsign = Some("W1CLUB".to_owned());
         input.exchange = serde_json::json!({ "fields_received": "not-an-object" });
-        assert_eq!(validate_log(&input).unwrap_err(), "exchange fields_received must be an object");
+        assert_eq!(
+            validate_log(&input).unwrap_err(),
+            "exchange fields_received must be an object"
+        );
     }
 }

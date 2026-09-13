@@ -28,7 +28,11 @@ pub(crate) fn validate_log(input: &QsoLogInput) -> Result<(), String> {
         return Err("exchange must be an object no larger than 8 KiB".to_owned());
     }
     for section in ["fields_sent", "fields_received"] {
-        if input.exchange.get(section).is_some_and(|fields| !fields.is_object()) {
+        if input
+            .exchange
+            .get(section)
+            .is_some_and(|fields| !fields.is_object())
+        {
             return Err(format!("exchange {section} must be an object"));
         }
     }

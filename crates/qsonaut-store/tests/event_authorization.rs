@@ -275,7 +275,10 @@ async fn new_user_and_club_callsigns_stay_in_the_managed_registry() {
     assert_policy_error(store.create_qso_log(user, &unscoped_log).await);
     let accepted_personal = store.create_qso_log(user, &personal_log).await.unwrap();
     assert_eq!(accepted_personal.callsign_id, Some(personal_identity));
-    assert_eq!(accepted_personal.operating_callsign.as_deref(), Some(user_call.as_str()));
+    assert_eq!(
+        accepted_personal.operating_callsign.as_deref(),
+        Some(user_call.as_str())
+    );
 
     sqlx::query("INSERT INTO club_members(club_id,user_id,role) VALUES ($1,$2,'observer')")
         .bind(club)

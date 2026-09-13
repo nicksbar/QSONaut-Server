@@ -16,13 +16,13 @@ use axum_extra::extract::cookie::CookieJar;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, Utc};
 use qsonaut_protocol::{
-    ActivityMapPoint, ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club, ClubInput,
-    ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
-    CurrentUser, DiagnosticReport, Event, EventInput, EventParticipant, EventParticipantInput,
-    EventScore, EventStatusInput, EventUpdateInput, ManagedCallsign, ManagedCallsignInput,
-    ManagedCallsignStatusInput, MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput,
-    QsoLog, QsoLogInput, ShareLink, ShareLinkInput, ShareLinkRecord, SharedQsoDetail,
-    StationPresence, StationPresenceInput,
+    ActivityMapPoint, ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
+    Club, ClubInput, ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
+    ContestTemplate, CurrentUser, DiagnosticReport, Event, EventInput, EventParticipant,
+    EventParticipantInput, EventScore, EventStatusInput, EventUpdateInput, ManagedCallsign,
+    ManagedCallsignInput, ManagedCallsignStatusInput, MemberDetail, MemberInput, MemberUpdateInput,
+    PasswordResetInput, QsoLog, QsoLogInput, ShareLink, ShareLinkInput, ShareLinkRecord,
+    SharedQsoDetail, StationPresence, StationPresenceInput,
 };
 use rand::RngCore;
 use uuid::Uuid;
@@ -693,7 +693,11 @@ pub(crate) async fn stations(
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<StationPresence>>> {
     let user = require_user(&state, &jar).await?;
-    let scope = if user.global_role == "administrator" { None } else { Some(user.id) };
+    let scope = if user.global_role == "administrator" {
+        None
+    } else {
+        Some(user.id)
+    };
     Ok(Json(state.store.station_presence(scope).await?))
 }
 
@@ -829,36 +833,57 @@ pub(crate) async fn activity_map(
 ) -> HttpResult<Json<Vec<ActivityMapPoint>>> {
     let user = require_user(&state, &jar).await?;
     if !["overall", "identity", "club", "event"].contains(&query.scope.as_str()) {
-        return Err(HttpError::bad_request("map scope must be overall, identity, club, or event"));
+        return Err(HttpError::bad_request(
+            "map scope must be overall, identity, club, or event",
+        ));
     }
     if query.scope == "overall" && query.scope_id.is_some() {
-        return Err(HttpError::bad_request("overall map scope cannot have a target"));
+        return Err(HttpError::bad_request(
+            "overall map scope cannot have a target",
+        ));
     }
     if query.scope != "overall" && query.scope_id.is_none() {
         return Err(HttpError::bad_request("this map scope requires an id"));
     }
     if query.scope == "identity" {
         let identity_id = query.scope_id.expect("validated above");
-        let identity = state.store.managed_callsign(identity_id).await?.ok_or_else(HttpError::not_found)?;
+        let identity = state
+            .store
+            .managed_callsign(identity_id)
+            .await?
+            .ok_or_else(HttpError::not_found)?;
         let identity_member = if let Some(club_id) = identity.club_id {
             state.store.active_club_member(user.id, club_id).await?
         } else {
             false
         };
-        if user.global_role != "administrator" && identity.owner_user_id != Some(user.id) && !identity_member {
+        if user.global_role != "administrator"
+            && identity.owner_user_id != Some(user.id)
+            && !identity_member
+        {
             return Err(HttpError::forbidden());
         }
     }
     if query.scope == "club" {
-        let club_id = query.scope_id.ok_or_else(|| HttpError::bad_request("club map scope requires a club"))?;
-        if user.global_role != "administrator" && !state.store.active_club_member(user.id, club_id).await? {
+        let club_id = query
+            .scope_id
+            .ok_or_else(|| HttpError::bad_request("club map scope requires a club"))?;
+        if user.global_role != "administrator"
+            && !state.store.active_club_member(user.id, club_id).await?
+        {
             return Err(HttpError::forbidden());
         }
     }
     if query.scope == "event" {
         let event_id = query.scope_id.expect("validated above");
-        let club_id = state.store.event_club_id(event_id).await?.ok_or_else(HttpError::not_found)?;
-        if user.global_role != "administrator" && !state.store.active_club_member(user.id, club_id).await? {
+        let club_id = state
+            .store
+            .event_club_id(event_id)
+            .await?
+            .ok_or_else(HttpError::not_found)?;
+        if user.global_role != "administrator"
+            && !state.store.active_club_member(user.id, club_id).await?
+        {
             return Err(HttpError::forbidden());
         }
     }
@@ -882,7 +907,10 @@ pub(crate) async fn activity_visibility(
 ) -> HttpResult<Json<Vec<ActivityVisibility>>> {
     let user = require_user(&state, &jar).await?;
     Ok(Json(
-        state.store.activity_visibility_policies(user.id, user.global_role == "administrator").await?,
+        state
+            .store
+            .activity_visibility_policies(user.id, user.global_role == "administrator")
+            .await?,
     ))
 }
 
@@ -902,13 +930,19 @@ pub(crate) async fn set_activity_visibility(
     match input.scope.as_str() {
         "identity" => {
             let identity_id = input.scope_id;
-            let identity = state.store.managed_callsign(identity_id).await?.ok_or_else(HttpError::not_found)?;
+            let identity = state
+                .store
+                .managed_callsign(identity_id)
+                .await?
+                .ok_or_else(HttpError::not_found)?;
             if identity.identity_type == "personal" {
                 if identity.owner_user_id != Some(user.id) && user.global_role != "administrator" {
                     return Err(HttpError::forbidden());
                 }
                 if input.visibility == "members" {
-                    return Err(HttpError::bad_request("personal callsigns support only private or global activity"));
+                    return Err(HttpError::bad_request(
+                        "personal callsigns support only private or global activity",
+                    ));
                 }
             } else {
                 let club_id = identity.club_id.ok_or_else(HttpError::not_found)?;
@@ -954,7 +988,12 @@ pub(crate) async fn diagnostics(
             .await?;
         Ok(Json(state.store.diagnostic_reports(500).await?))
     } else {
-        Ok(Json(state.store.diagnostic_reports_for_user(user.id, 100).await?))
+        Ok(Json(
+            state
+                .store
+                .diagnostic_reports_for_user(user.id, 100)
+                .await?,
+        ))
     }
 }
 

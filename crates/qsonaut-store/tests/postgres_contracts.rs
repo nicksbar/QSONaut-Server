@@ -25,7 +25,8 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .await
         .expect("insert test user");
     let other_user_id = Uuid::new_v4();
-    let other_callsign = format!("T{}", &other_user_id.simple().to_string()[..8]).to_ascii_uppercase();
+    let other_callsign =
+        format!("T{}", &other_user_id.simple().to_string()[..8]).to_ascii_uppercase();
     sqlx::query("INSERT INTO users (id,callsign,display_name,password_hash,global_role) VALUES ($1,$2,'Other migration test','unused','member')")
         .bind(other_user_id)
         .bind(&other_callsign)
@@ -52,7 +53,9 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .create_club(
             &ClubInput {
                 name: format!("Contract Club {club_suffix}"),
-                callsign: Some(format!("N{}", &user_id.simple().to_string()[..6]).to_ascii_uppercase()),
+                callsign: Some(
+                    format!("N{}", &user_id.simple().to_string()[..6]).to_ascii_uppercase(),
+                ),
                 description: "membership contract".to_owned(),
             },
             user_id,
@@ -70,7 +73,12 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .expect("review club membership")
         .expect("pending membership request");
     assert_eq!(approved.status, "approved");
-    assert!(store.active_club_member(other_user_id, club.id).await.unwrap());
+    assert!(
+        store
+            .active_club_member(other_user_id, club.id)
+            .await
+            .unwrap()
+    );
     let membership = store
         .set_club_member(
             club.id,
@@ -87,13 +95,30 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .await
         .expect("lapse club membership");
     assert_eq!(membership.membership_status, "lapsed");
-    assert!(!store.active_club_member(other_user_id, club.id).await.unwrap());
-    let other_clubs = store.clubs(other_user_id, false).await.expect("load member organizations");
-    let other_club = other_clubs.iter().find(|item| item.id == club.id).expect("club remains discoverable");
+    assert!(
+        !store
+            .active_club_member(other_user_id, club.id)
+            .await
+            .unwrap()
+    );
+    let other_clubs = store
+        .clubs(other_user_id, false)
+        .await
+        .expect("load member organizations");
+    let other_club = other_clubs
+        .iter()
+        .find(|item| item.id == club.id)
+        .expect("club remains discoverable");
     assert_eq!(other_club.my_role.as_deref(), Some("operator"));
     assert_eq!(other_club.my_membership_status.as_deref(), Some("lapsed"));
-    let owner_clubs = store.clubs(user_id, false).await.expect("load owner organizations");
-    let owner_club = owner_clubs.iter().find(|item| item.id == club.id).expect("owner club exists");
+    let owner_clubs = store
+        .clubs(user_id, false)
+        .await
+        .expect("load owner organizations");
+    let owner_club = owner_clubs
+        .iter()
+        .find(|item| item.id == club.id)
+        .expect("owner club exists");
     assert_eq!(owner_club.my_role.as_deref(), Some("owner"));
     assert_eq!(owner_club.my_membership_status.as_deref(), Some("active"));
 
@@ -135,8 +160,18 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .upsert_station_presence(user_id, &station)
         .await
         .expect("create user station");
-    assert_eq!(store.station_presence(Some(user_id)).await.unwrap().len(), 1);
-    assert_eq!(store.station_presence(Some(other_user_id)).await.unwrap().len(), 0);
+    assert_eq!(
+        store.station_presence(Some(user_id)).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        store
+            .station_presence(Some(other_user_id))
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
 
     let challenge_id = Uuid::new_v4();
     store
@@ -228,7 +263,11 @@ async fn migrated_postgres_supports_challenges_visibility_and_log_retries() {
         .await
         .expect("load viewer logs");
     assert!(visible_logs.iter().any(|item| item.user_id == user_id));
-    assert!(visible_logs.iter().any(|item| item.user_id == other_user_id));
+    assert!(
+        visible_logs
+            .iter()
+            .any(|item| item.user_id == other_user_id)
+    );
     let summary = store
         .activity_summary(user_id, "overall", None, 0)
         .await

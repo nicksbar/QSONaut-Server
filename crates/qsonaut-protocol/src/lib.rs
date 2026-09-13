@@ -866,13 +866,7 @@ mod tests {
             source: "qsonaut".to_owned(),
         });
         let value = serde_json::to_value(detail).expect("shared detail serializes");
-        for internal in [
-            "id",
-            "user_id",
-            "event_id",
-            "visibility",
-            "idempotency_key",
-        ] {
+        for internal in ["id", "user_id", "event_id", "visibility", "idempotency_key"] {
             assert!(value.get(internal).is_none(), "leaked {internal}");
         }
     }
