@@ -15,6 +15,7 @@
   <div class="footer-links">
     <a href={qsonautUrl} target="_blank" rel="noreferrer">Desktop project ↗</a>
     <a href={serverUrl} target="_blank" rel="noreferrer">Server project ↗</a>
+    <a href="https://github.com/sponsors/nicksbar" target="_blank" rel="noreferrer">Donate ↗</a>
     <a href={issuesUrl} target="_blank" rel="noreferrer">Report an issue ↗</a>
     <a href="https://qsonaut.com" target="_blank" rel="noreferrer">qsonaut.com ↗</a>
   </div>
