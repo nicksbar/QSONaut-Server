@@ -144,7 +144,7 @@
       const setup = await api<{ setup_required: boolean }>('/api/v1/auth/setup');
       if (setup.setup_required) { phase = 'setup'; return; }
       const current = await api<User>('/api/v1/auth/me');
-      user = current; profileName = current.display_name; phase = 'ready'; await Promise.all([load(), loadProfile()]);
+      user = current; profileName = current.display_name; phase = 'ready'; await Promise.all([load(), loadProfile()]); applyHash();
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
         phase = 'login';
@@ -165,7 +165,7 @@
           ? { callsign, display_name: displayName, password }
           : { callsign, password }),
       });
-      user = current; profileName = current.display_name; password = ''; phase = 'ready'; await Promise.all([load(), loadProfile()]);
+      user = current; profileName = current.display_name; password = ''; phase = 'ready'; await Promise.all([load(), loadProfile()]); applyHash();
     } catch (cause) { error = (cause as Error).message; } finally { busy = false; }
   }
 
@@ -212,17 +212,51 @@
     profileName = profile.user.display_name;
   }
 
-  function openTab(next: Tab) {
+  function hashFor(next: Tab, clubId: string | null = null) {
+    return next === 'events' && clubId ? `#events/${encodeURIComponent(clubId)}` : `#${next}`;
+  }
+
+  function tabFromHash(): { tab: Tab; clubId: string | null } {
+    const parts = window.location.hash.replace(/^#/, '').split('/');
+    const candidate = parts[0] as Tab;
+    const allowed: Tab[] = ['overview', 'clubs', 'members', 'events', 'extension', 'identities', 'activity', 'station', 'profile', 'admin', 'admin-operations', 'admin-identities', 'server-data', 'server-messages'];
+    if (!allowed.includes(candidate)) return { tab: 'overview', clubId: null };
+    try {
+      return { tab: candidate, clubId: candidate === 'events' && parts[1] ? decodeURIComponent(parts[1]) : null };
+    } catch {
+      return { tab: 'overview', clubId: null };
+    }
+  }
+
+  function applyHash() {
+    if (!user) return;
+    const requested = tabFromHash();
+    const administratorOnly: Tab[] = ['admin', 'admin-operations', 'admin-identities', 'server-data', 'server-messages'];
+    if (administratorOnly.includes(requested.tab) && user.global_role !== 'administrator') {
+      tab = 'overview'; clubScopeId = null; window.history.replaceState(null, '', hashFor('overview')); return;
+    }
+    if (requested.tab === 'extension' && capabilities.edition === 'community') {
+      tab = 'overview'; clubScopeId = null; window.history.replaceState(null, '', hashFor('overview')); return;
+    }
+    tab = requested.tab;
+    clubScopeId = requested.tab === 'events' && requested.clubId && activeMemberships.some((club) => club.id === requested.clubId)
+      ? requested.clubId : null;
+    if (requested.tab === 'profile') void loadProfile().catch((cause) => { profileNotice = (cause as Error).message; });
+  }
+
+  function openTab(next: Tab, updateHash = true) {
     tab = next;
     if (next !== 'events') clubScopeId = null;
     operatorMenuOpen = false;
     if (next === 'profile' && user) void loadProfile().catch((cause) => { profileNotice = (cause as Error).message; });
+    if (updateHash) window.location.hash = hashFor(next, clubScopeId);
   }
 
   function openClubOperations(club: Club) {
     clubScopeId = club.id;
     tab = 'events';
     operatorMenuOpen = false;
+    window.location.hash = hashFor('events', club.id);
   }
 
   function profileInput() {
@@ -269,13 +303,15 @@
   }
 
   onMount(() => {
+    const handleHashChange = () => { if (phase === 'ready') applyHash(); };
+    window.addEventListener('hashchange', handleHashChange);
     void initialize();
     const activityTimer = window.setInterval(() => {
       if (phase === 'ready' && tab === 'activity') {
         void refreshActivity().catch((cause) => { error = (cause as Error).message; });
       }
     }, 5_000);
-    return () => window.clearInterval(activityTimer);
+    return () => { window.clearInterval(activityTimer); window.removeEventListener('hashchange', handleHashChange); };
   });
 </script>
 
