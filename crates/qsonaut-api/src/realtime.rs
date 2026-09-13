@@ -1,7 +1,8 @@
 use crate::{
     AppState,
-    auth::{require_device_with_scopes, validate_callsign},
+    auth::require_device_with_scopes,
     error::HttpResult,
+    log_validation::{canonicalize_contest_exchange, validate_log},
 };
 use axum::{
     extract::{
@@ -12,8 +13,8 @@ use axum::{
     response::Response,
 };
 use qsonaut_protocol::{
-    API_VERSION, ClientEnvelope, ClientMessage, CurrentUser, QsoLogInput, ServerEnvelope,
-    ServerMessage, StationPresenceInput,
+    API_VERSION, ClientEnvelope, ClientMessage, CurrentUser, ServerEnvelope, ServerMessage,
+    StationPresenceInput,
 };
 
 pub(crate) async fn connect(
@@ -139,7 +140,9 @@ async fn handle_message(
         }
         ClientMessage::Log(input) => {
             require_scope(scopes, "logs:write")?;
+            let mut input = input;
             validate_log(&input)?;
+            canonicalize_contest_exchange(&mut input.exchange);
             let qso = state
                 .store
                 .create_qso_log(user.id, &input)
@@ -318,23 +321,6 @@ fn validate_presence(input: &StationPresenceInput) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_log(input: &QsoLogInput) -> Result<(), String> {
-    validate_callsign(&input.callsign).map_err(|_| "invalid contact callsign".to_owned())?;
-    if input.band.trim().is_empty() || input.mode.trim().is_empty() {
-        return Err("callsign, band, and mode are required".to_owned());
-    }
-    if input.frequency_hz.is_some_and(|frequency| frequency < 0) {
-        return Err("frequency cannot be negative".to_owned());
-    }
-    if !input.exchange.is_object() || input.exchange.to_string().len() > 8_192 {
-        return Err("exchange must be an object no larger than 8 KiB".to_owned());
-    }
-    if input.source.trim().is_empty() || input.source.len() > 40 {
-        return Err("log source must contain 1 to 40 characters".to_owned());
-    }
-    Ok(())
-}
-
 async fn send(socket: &mut WebSocket, envelope: ServerEnvelope) -> Result<(), axum::Error> {
     let text = serde_json::to_string(&envelope).map_err(axum::Error::new)?;
     socket.send(Message::Text(text.into())).await
@@ -366,6 +352,7 @@ fn internal_error(error: &sqlx::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qsonaut_protocol::QsoLogInput;
 
     #[test]
     fn websocket_envelope_is_compatible_with_native_client_contract() {
@@ -428,13 +415,11 @@ mod tests {
     }
 
     #[test]
-    fn log_validation_rejects_malformed_records_but_ignores_legacy_visibility() {
+    fn log_validation_rejects_malformed_records() {
         let mut input = QsoLogInput {
             event_id: None,
             operating_callsign: None,
             callsign_id: None,
-            visibility: "global".to_owned(),
-            visibility_club_id: None,
             idempotency_key: uuid::Uuid::new_v4(),
             callsign: "W1AW".to_owned(),
             band: "20m".to_owned(),
@@ -447,11 +432,48 @@ mod tests {
             points: 1,
             source: "qsonaut".to_owned(),
         };
+        assert_eq!(
+            validate_log(&input).unwrap_err(),
+            "every QSO requires an operating callsign identity"
+        );
+        input.callsign_id = Some(uuid::Uuid::new_v4());
+        input.operating_callsign = Some("N7UF".to_owned());
         assert!(validate_log(&input).is_ok());
         input.callsign = "not a callsign".to_owned();
         assert!(validate_log(&input).is_err());
         input.callsign = "W1AW".to_owned();
         input.exchange = serde_json::json!({ "payload": "x".repeat(8_193) });
         assert!(validate_log(&input).is_err());
+    }
+
+    #[test]
+    fn log_validation_requires_identity_and_object_shaped_exchange_for_events() {
+        let mut input = QsoLogInput {
+            event_id: Some(uuid::Uuid::new_v4()),
+            operating_callsign: None,
+            callsign_id: None,
+            idempotency_key: uuid::Uuid::new_v4(),
+            callsign: "W1AW".to_owned(),
+            band: "20m".to_owned(),
+            mode: "FT8".to_owned(),
+            frequency_hz: None,
+            occurred_at: chrono::Utc::now(),
+            rst_sent: None,
+            rst_received: None,
+            exchange: serde_json::json!({}),
+            points: 0,
+            source: "qsonaut".to_owned(),
+        };
+        assert_eq!(
+            validate_log(&input).unwrap_err(),
+            "every QSO requires an operating callsign identity"
+        );
+        input.callsign_id = Some(uuid::Uuid::new_v4());
+        input.operating_callsign = Some("W1CLUB".to_owned());
+        input.exchange = serde_json::json!({ "fields_received": "not-an-object" });
+        assert_eq!(
+            validate_log(&input).unwrap_err(),
+            "exchange fields_received must be an object"
+        );
     }
 }

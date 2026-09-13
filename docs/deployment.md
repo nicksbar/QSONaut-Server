@@ -45,9 +45,11 @@ inspect the migration error and restore from backup only if necessary. Never
 run `docker compose down -v` as part of a routine deployment.
 
 Diagnostic reports are bounded at ingestion and retained for 30 days. Expired
-diagnostics and share-link records are removed only by the authenticated
-administrator retention operation (`POST /api/v1/diagnostics/retention/purge`);
-startup and restart do not silently delete data.
+diagnostics and share-link records are removed by the authenticated
+administrator retention operation (`POST /api/v1/diagnostics/retention/purge`).
+An administrator may also permanently delete every submitted diagnostic report
+with `DELETE /api/v1/diagnostics`; startup and restart do not silently delete
+data.
 
 ### Logs and health checks
 
@@ -97,3 +99,6 @@ cargo build --release -p qsonaut-server
 
 Set `QSONAUT_DATABASE_URL`, `QSONAUT_SERVER_BIND`, and
 `QSONAUT_SERVER_WEB_ROOT=web/build` before starting the resulting binary.
+For browser-based QSONaut linking, also set
+`QSONAUT_SERVER_PUBLIC_URL` to the public HTTPS origin, such as
+`https://www.qsonaut.com`. It must not contain a path or query string.

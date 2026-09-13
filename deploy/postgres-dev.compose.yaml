@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_DB: qsonaut
       POSTGRES_USER: qsonaut
-      POSTGRES_PASSWORD: qsonaut-dev-password
+      POSTGRES_PASSWORD: ${QSONAUT_DEV_DATABASE_PASSWORD:?set QSONAUT_DEV_DATABASE_PASSWORD}
     ports:
       - "127.0.0.1:${QSONAUT_DEV_POSTGRES_PORT:-5432}:5432"
     volumes:

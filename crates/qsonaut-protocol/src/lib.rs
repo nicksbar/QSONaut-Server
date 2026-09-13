@@ -199,18 +199,31 @@ pub struct ActivitySummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActivityVisibility {
     pub id: Uuid,
-    pub user_id: Uuid,
     pub scope: String,
-    pub scope_id: Option<Uuid>,
+    pub scope_id: Uuid,
     pub visibility: String,
+    pub updated_by_user_id: Uuid,
+    pub can_edit: bool,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActivityVisibilityInput {
     pub scope: String,
-    pub scope_id: Option<Uuid>,
+    pub scope_id: Uuid,
     pub visibility: String,
+}
+
+/// A privacy-safe aggregate of QSOs whose exchange included a valid
+/// Maidenhead grid square. Coordinates represent the grid-square centre, not
+/// an operator's precise profile location.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ActivityMapPoint {
+    pub grid: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub qso_count: i64,
+    pub last_qso_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -223,6 +236,44 @@ pub struct DeviceCredentials {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceRegistration {
     pub device_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceAuthorizationRequest {
+    pub client_id: String,
+    pub device_name: String,
+    pub client_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceAuthorizationResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub verification_uri_complete: Option<String>,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceAuthorizationApproval {
+    pub device_name: String,
+    pub client_id: String,
+    pub client_version: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceAuthorizationDecisionInput {
+    pub user_code: String,
+    pub approved: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceAuthorizationTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -337,6 +388,7 @@ pub struct Club {
     pub member_count: i64,
     pub renewal_attention_count: i64,
     pub my_role: Option<String>,
+    pub my_membership_status: Option<String>,
     pub join_request_status: Option<String>,
     pub can_manage: bool,
 }
@@ -572,8 +624,6 @@ pub struct QsoLog {
     pub scoring_explanation: String,
     pub event_id: Option<Uuid>,
     pub event_name: Option<String>,
-    pub visibility: String,
-    pub visibility_club_id: Option<Uuid>,
     pub idempotency_key: Uuid,
     pub callsign: String,
     pub band: String,
@@ -588,16 +638,13 @@ pub struct QsoLog {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct QsoLogInput {
     pub event_id: Option<Uuid>,
     #[serde(default)]
     pub operating_callsign: Option<String>,
     #[serde(default)]
     pub callsign_id: Option<Uuid>,
-    #[serde(default = "default_qso_visibility")]
-    pub visibility: String,
-    #[serde(default)]
-    pub visibility_club_id: Option<Uuid>,
     pub idempotency_key: Uuid,
     pub callsign: String,
     pub band: String,
@@ -783,10 +830,6 @@ fn default_qso_source() -> String {
     "qsonaut".to_owned()
 }
 
-fn default_qso_visibility() -> String {
-    "private".to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{QsoLog, SharedQsoDetail};
@@ -810,8 +853,6 @@ mod tests {
             scoring_explanation: String::new(),
             event_id: Some(Uuid::new_v4()),
             event_name: Some("Field Day".to_owned()),
-            visibility: "private".to_owned(),
-            visibility_club_id: Some(Uuid::new_v4()),
             idempotency_key: Uuid::new_v4(),
             callsign: "W1AW".to_owned(),
             band: "20m".to_owned(),
@@ -825,14 +866,7 @@ mod tests {
             source: "qsonaut".to_owned(),
         });
         let value = serde_json::to_value(detail).expect("shared detail serializes");
-        for internal in [
-            "id",
-            "user_id",
-            "event_id",
-            "visibility",
-            "visibility_club_id",
-            "idempotency_key",
-        ] {
+        for internal in ["id", "user_id", "event_id", "visibility", "idempotency_key"] {
             assert!(value.get(internal).is_none(), "leaked {internal}");
         }
     }

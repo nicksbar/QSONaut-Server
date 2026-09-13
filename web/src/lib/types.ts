@@ -5,6 +5,13 @@ export type User = {
   global_role: string;
 };
 
+export type DeviceAuthorizationApproval = {
+  device_name: string;
+  client_id: string;
+  client_version: string;
+  expires_at: string;
+};
+
 export type ServerCapabilities = {
   edition: string;
   max_clubs: number | null;
@@ -79,11 +86,20 @@ export type ActivitySummary = {
 
 export type ActivityVisibility = {
   id: string;
-  user_id: string;
-  scope: 'overall' | 'club' | 'contest';
-  scope_id: string | null;
+  scope: 'identity' | 'club' | 'event';
+  scope_id: string;
   visibility: 'private' | 'members' | 'global';
+  updated_by_user_id: string;
+  can_edit: boolean;
   updated_at: string;
+};
+
+export type ActivityMapPoint = {
+  grid: string;
+  latitude: number;
+  longitude: number;
+  qso_count: number;
+  last_qso_at: string;
 };
 
 export type ShareLinkRecord = {
@@ -119,6 +135,7 @@ export type Club = {
   member_count: number;
   renewal_attention_count: number;
   my_role: string | null;
+  my_membership_status: string | null;
   join_request_status: string | null;
   can_manage: boolean;
 };
@@ -258,14 +275,22 @@ export type EventParticipant = {
   mode: string | null;
 };
 
+export type EventScore = {
+  event_id: string;
+  total_points: number;
+  qso_count: number;
+  duplicate_count: number;
+  multiplier_values: Record<string, unknown>;
+};
+
 export type QsoLog = {
   id: string;
   user_id: string;
   operator_callsign: string;
+  operating_callsign: string | null;
+  callsign_id: string | null;
   event_id: string | null;
   event_name: string | null;
-  visibility: 'private' | 'global' | 'club' | 'contest';
-  visibility_club_id: string | null;
   callsign: string;
   band: string;
   mode: string;

@@ -2,7 +2,7 @@
   import { api, formatFrequency } from './api';
   import type { ChannelMessage, DiagnosticReport, QsoLog, ServerCapabilities, ShareLinkRecord, Station } from './types';
   import { onMount } from 'svelte';
-  let { administrator, capabilities, stations, logs, messages, diagnostics, refresh }: { administrator: boolean; capabilities: ServerCapabilities; stations: Station[]; logs: QsoLog[]; messages: ChannelMessage[]; diagnostics: DiagnosticReport[]; refresh: () => Promise<void> } = $props();
+  let { administrator, capabilities, stations, logs, messages, diagnostics, refresh, showLogs = true, showMessages = true }: { administrator: boolean; capabilities: ServerCapabilities; stations: Station[]; logs: QsoLog[]; messages: ChannelMessage[]; diagnostics: DiagnosticReport[]; refresh: () => Promise<void>; showLogs?: boolean; showMessages?: boolean } = $props();
   let externalSharingEnabled = $derived(capabilities.features.includes('external sharing'));
   let shareStatus = $state('');
   let shares = $state<ShareLinkRecord[]>([]);
@@ -70,6 +70,7 @@
 </script>
 
 <section>
+  {#if administrator}
   <div class="section-head"><div><p class="eyebrow">QSONAUT / LIVE STATION NETWORK</p><h2>Connected stations</h2></div><div><small>{visibleStations.length} of {stations.length} · LIVE · 5 s</small> <button onclick={refresh}>REFRESH ACTIVITY</button></div></div>
   <div class="list-tools"><input aria-label="Search connected stations" placeholder="Search callsign, radio, or mode" bind:value={stationSearch} /></div>
   <p class="section-intro">Live operator, station, frequency, band, and mode context shared by connected QSONaut clients.</p>
@@ -97,6 +98,7 @@
     {/each}
   {/if}
 
+  {#if showMessages}
   <div class="section-head"><div><p class="eyebrow">AUTOMATION / CHANNEL TRAFFIC</p><h2>Messages</h2></div><b>{visibleMessages.length} of {messages.length} messages</b></div>
   <div class="list-tools"><input aria-label="Search channel messages" placeholder="Search channel, author, or message" bind:value={messageSearch} /></div>
   {#if messages.length === 0}
@@ -110,8 +112,18 @@
       {/each}
     </div>
   {/if}
+  {/if}
 
-  <div class="section-head"><div><p class="eyebrow">COLLECTED ACTIVITY / YOUR ACCESS</p><h2>QSO logs</h2></div><div><b>{visibleLogs.length} of {logs.length} records</b>{#if shareStatus}<small class="share-status">{shareStatus}</small>{/if}</div></div>
+  {/if}
+
+  {#if !administrator}
+    <div class="section-head"><div><p class="eyebrow">MY SUBMISSIONS / SUPPORT HISTORY</p><h2>Hardware validation snapshots</h2></div><b>{visibleDiagnostics.length} submitted</b></div>
+    <p class="section-intro">These are the opt-in support snapshots submitted by your QSONaut stations. They are visible to you and to server administrators; cross-operator review is administrator-only.</p>
+    {#if diagnostics.length === 0}<p class="empty">No hardware validation snapshots submitted yet.</p>{:else if visibleDiagnostics.length === 0}<p class="empty">No submitted snapshots match the current search.</p>{:else}{#each visibleDiagnostics as report}<article class="diagnostic-card"><div class="detail-head"><div><b>{report.summary}</b><p>{report.category} · submitted {new Date(report.created_at).toLocaleString()}</p></div><span class="pill">{report.instance_id.slice(0,8)}</span></div><details><summary>View my submitted snapshot</summary><pre>{JSON.stringify(report.payload, null, 2)}</pre></details></article>{/each}{/if}
+  {/if}
+
+  {#if showLogs}
+  <div class="section-head"><div><p class="eyebrow">{administrator ? 'COLLECTED ACTIVITY / SERVER REVIEW' : 'MY SUBMISSIONS / LOG HISTORY'}</p><h2>{administrator ? 'QSO logs' : 'My QSO logs'}</h2></div><div><b>{visibleLogs.length} of {logs.length} records</b>{#if shareStatus}<small class="share-status">{shareStatus}</small>{/if}</div></div>
   <div class="list-tools"><input aria-label="Search QSO logs" placeholder="Search callsign, band, mode, or event" bind:value={logSearch} /><select aria-label="Filter QSO logs by mode" bind:value={logMode}><option value="all">All modes</option>{#each logModes as mode}<option value={mode}>{mode}</option>{/each}</select></div>
   {#if logs.length === 0}
     <div class="empty-state shallow"><span>≋</span><h3>No uploaded logs</h3><p>Logs will appear here when an authenticated QSONaut client submits its idempotent QSO records. Manual logging remains in QSONaut.</p></div>
@@ -129,6 +141,7 @@
     {:else}
       <div class="share-list">{#each visibleShares as share}<article><div><b>{share.worked_callsign}</b><small>{new Date(share.occurred_at).toLocaleString()} · expires {new Date(share.expires_at).toLocaleDateString()}</small></div>{#if share.revoked_at}<span class="pill">revoked</span>{:else if new Date(share.expires_at) <= new Date()}<span class="pill">expired</span>{:else}<button onclick={() => void revokeShare(share.id)}>REVOKE</button>{/if}</article>{/each}</div>
     {/if}
+  {/if}
   {/if}
 </section>
 

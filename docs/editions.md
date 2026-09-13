@@ -26,7 +26,56 @@ hosted CAPTCHA, or provider credentials. Those remain optional extensions so a
 local or field deployment stays fully usable offline and without a hosted
 commercial dependency.
 
+The ownership and visibility model is documented in
+[ownership boundaries](ownership-boundaries.md): normal operator workspaces
+are scoped to active club memberships; organization work owns contests and
+rosters; server-wide repair is administrator-only.
+
 The public repository contains no governance API, persistence types, or UI for
 board management, officer assignments, elections, or voting cycles. Historical
 migrations are immutable database history; new hosted deployments apply the
 governance schema from the private companion.
+
+## Community QSO map
+
+The public edition provides a deliberately basic QSO map at
+`/api/v1/activity/map`. It shows the authenticated operator's activity as an
+aggregate or for one owned callsign, or activity for an active club's events,
+subject to the existing activity
+visibility rules. It aggregates valid four- or six-character Maidenhead grids
+from submitted QSO exchanges (`grid`, `grid_square`, or `gridsquare`) and
+places each marker at the grid-square centre. It does not geocode callsigns,
+read profile coordinates, or expose a precise operator location. The web
+console includes this map in Activity and privacy, with owned-identity,
+active-club, and event scopes. Its simplified Natural Earth 110m country
+basemap, plus bundled U.S. state boundaries, is shipped with the web
+application, so the community map does not need internet access or a
+map-service account. Activity controls can also show locally generated
+Maidenhead fields, four-character square lines, U.S. county boundaries, and
+exact contact cells. At closer zoom, a locally generated worldwide
+six-character grid overlay and grid-code labels are available. Six-character
+grids are retained and displayed at their full precision when the submitted
+exchange provides them; these are visual aids, not contest completion or
+scoring logic.
+
+Public scope means useful geographic context and simple filtering, not a full
+analytics or social-map product.
+
+## Planned contest overlays
+
+Activity may later offer optional checkoff overlays when a contest definition
+supports them: grids, states, counties, or other bounded exchange dimensions.
+They should be explicitly enabled and controlled from Activity for the owning
+identity, club, or event. Overlay calculations must be limited to logs the
+viewer is already permitted to see; the overlay setting is not a visibility
+grant. The community version should keep this to simple bundled boundaries
+and basic completion state. Hosted work may add richer rule packs,
+participant-wide aggregation, validation workflows, historical progress,
+and exports.
+
+The hosted edition may provide a substantially enhanced map as a separate
+product capability. Candidate enhancements include richer time playback,
+organization dashboards, aggregation and privacy controls, contest overlays,
+geospatial clustering, exports, and policy-aware sharing. These are discovery
+items only; hosted work must not weaken public visibility defaults or expose
+private operator location data.

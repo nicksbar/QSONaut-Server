@@ -5,6 +5,7 @@ use axum::{
 };
 use qsonaut_protocol::ApiError;
 
+#[derive(Debug)]
 pub(crate) struct HttpError {
     status: StatusCode,
     message: String,

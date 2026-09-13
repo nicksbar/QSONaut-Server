@@ -2,6 +2,32 @@
 
 ## Unreleased — 2026-09-10
 
+- Replaced submitter-scoped activity sharing with policy-owned identity, club,
+  and event activity rules. Retired the unused per-QSO visibility columns and
+  fields; maps now use the same effective permissions for personal, identity,
+  club, and event scopes.
+- Replaced the community map's coordinate-grid placeholder with a responsive,
+  fully offline Leaflet map using bundled Natural Earth 110m country
+  boundaries and U.S. state boundaries, with grid-centre markers, tooltips,
+  zooming, and explicit approximate-location messaging.
+- Added zoom-aware offline country and U.S. state labels to keep the basic map
+  readable without introducing a hosted geocoder or map-label service.
+- Added Activity map controls for country boundaries, U.S. state boundaries,
+  labels, and fitting the view to the currently permitted activity.
+- Added locally generated Maidenhead field and square overlays with independent
+  Activity controls; no grid tiles or map service are required.
+- Added offline U.S. county boundaries and zoom-aware labels, plus exact
+  contact-cell outlines and full six-character grid labels where submitted
+  exchanges provide them.
+- Added zoom-triggered worldwide six-character Maidenhead grid detail and
+  local grid-code labels, with an Activity toggle and automatic close-up
+  framing for precise contacts.
+- Added the administrator-only `DELETE /api/v1/diagnostics` operation and
+  console action to permanently purge all submitted hardware-validation
+  reports; retention cleanup remains a separate expired-data operation.
+- Restricted club and event policy changes to owners/coordinators and exposed
+  read-only policy ownership in the management console.
+
 - Migration 0019 adds a database-level event QSO submission guard for active
   operating membership, event state and QSO occurrence time.
 - API responses expose the guard's deliberate validation messages; other

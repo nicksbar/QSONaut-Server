@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use qsonaut_protocol::{
-    AccessRequest, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
+    AccessRequest, ActivityMapPoint, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
     ChannelMessageInput, Club, ClubInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
     ContestTemplate, CurrentUser, DiagnosticReport, DiagnosticReportInput, Event, EventInput,
     EventParticipant, EventParticipantInput, EventScore, EventStatus, EventUpdateInput,
@@ -12,6 +12,7 @@ use qsonaut_protocol::{
 };
 use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 fn should_preserve_last_administrator(
@@ -19,6 +20,50 @@ fn should_preserve_last_administrator(
     target_is_administrator: bool,
 ) -> bool {
     target_is_administrator && administrator_count <= 1
+}
+
+fn maidenhead_center(grid: &str) -> Option<(String, f64, f64)> {
+    let normalized = grid.trim().to_ascii_uppercase();
+    let bytes = normalized.as_bytes();
+    if !(bytes.len() == 4 || bytes.len() == 6)
+        || !(b'A'..=b'R').contains(&bytes[0])
+        || !(b'A'..=b'R').contains(&bytes[1])
+        || !bytes[2].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+        || (bytes.len() == 6
+            && (!(b'A'..=b'X').contains(&bytes[4]) || !(b'A'..=b'X').contains(&bytes[5])))
+    {
+        return None;
+    }
+    let mut longitude =
+        -180.0 + f64::from(bytes[0] - b'A') * 20.0 + f64::from(bytes[2] - b'0') * 2.0;
+    let mut latitude = -90.0 + f64::from(bytes[1] - b'A') * 10.0 + f64::from(bytes[3] - b'0');
+    let (width, height) = if bytes.len() == 6 {
+        longitude += f64::from(bytes[4] - b'A') * (5.0 / 60.0);
+        latitude += f64::from(bytes[5] - b'A') * (2.5 / 60.0);
+        (5.0 / 60.0, 2.5 / 60.0)
+    } else {
+        (2.0, 1.0)
+    };
+    Some((normalized, latitude + height / 2.0, longitude + width / 2.0))
+}
+
+fn grid_from_exchange(exchange: &Value) -> Option<&str> {
+    const GRID_KEYS: [&str; 3] = ["grid", "grid_square", "gridsquare"];
+    GRID_KEYS
+        .into_iter()
+        .find_map(|key| exchange.get(key).and_then(Value::as_str))
+        .or_else(|| {
+            ["fields_received", "fields_sent"]
+                .into_iter()
+                .find_map(|section| {
+                    exchange.get(section).and_then(|fields| {
+                        GRID_KEYS
+                            .into_iter()
+                            .find_map(|key| fields.get(key).and_then(Value::as_str))
+                    })
+                })
+        })
 }
 
 #[derive(sqlx::FromRow)]
@@ -35,6 +80,26 @@ struct EventRow {
     contest_definition_version: Option<i32>,
     contest_config: Value,
     participant_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAuthorizationApprovalRecord {
+    pub device_name: String,
+    pub client_id: String,
+    pub client_version: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceAuthorizationGrantInput<'a> {
+    pub id: Uuid,
+    pub client_id: &'a str,
+    pub device_name: &'a str,
+    pub client_version: &'a str,
+    pub device_code_hash: &'a [u8],
+    pub user_code_hash: &'a [u8],
+    pub expires_at: DateTime<Utc>,
+    pub interval_seconds: i32,
 }
 
 impl From<EventRow> for Event {
@@ -122,8 +187,6 @@ struct QsoLogRow {
     scoring_explanation: String,
     event_id: Option<Uuid>,
     event_name: Option<String>,
-    visibility: String,
-    visibility_club_id: Option<Uuid>,
     idempotency_key: Uuid,
     callsign: String,
     band: String,
@@ -135,6 +198,12 @@ struct QsoLogRow {
     exchange: Value,
     points: i32,
     source: String,
+}
+
+const QSO_LOG_COLUMNS: &str = "q.id, q.user_id, COALESCE(q.operator_callsign,u.callsign) AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source";
+
+fn qso_log_query(from_and_where: &str) -> String {
+    format!("SELECT {QSO_LOG_COLUMNS} {from_and_where}")
 }
 
 #[derive(sqlx::FromRow)]
@@ -316,8 +385,6 @@ impl From<QsoLogRow> for QsoLog {
             scoring_explanation: row.scoring_explanation,
             event_id: row.event_id,
             event_name: row.event_name,
-            visibility: row.visibility,
-            visibility_club_id: row.visibility_club_id,
             idempotency_key: row.idempotency_key,
             callsign: row.callsign,
             band: row.band,
@@ -724,16 +791,18 @@ impl Store {
     pub async fn activity_visibility_policies(
         &self,
         user_id: Uuid,
+        is_administrator: bool,
     ) -> Result<Vec<ActivityVisibility>, sqlx::Error> {
-        sqlx::query_as::<_, (Uuid, Uuid, String, Option<Uuid>, String, DateTime<Utc>)>(
-            "SELECT id,user_id,scope,scope_id,visibility,updated_at FROM activity_visibility_policies WHERE user_id=$1 ORDER BY scope,scope_id NULLS FIRST",
+        sqlx::query_as::<_, (Uuid, String, Uuid, String, Uuid, bool, DateTime<Utc>)>(
+            "SELECT p.id, CASE WHEN p.identity_id IS NOT NULL THEN 'identity' WHEN p.club_id IS NOT NULL THEN 'club' ELSE 'event' END AS scope, COALESCE(p.identity_id,p.club_id,p.event_id) AS scope_id, p.visibility, p.updated_by_user_id, ($2 OR (p.identity_id IS NOT NULL AND (c.owner_user_id=$1 OR EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=c.club_id AND m.user_id=$1 AND m.membership_status='active' AND m.role IN ('owner','coordinator')))) OR (p.club_id IS NOT NULL AND EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=p.club_id AND m.user_id=$1 AND m.membership_status='active' AND m.role IN ('owner','coordinator'))) OR (p.event_id IS NOT NULL AND EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=et.club_id AND m.user_id=$1 AND m.membership_status='active' AND m.role IN ('owner','coordinator')))) AS can_edit, p.updated_at FROM activity_visibility_policies p LEFT JOIN managed_callsigns c ON c.id=p.identity_id LEFT JOIN events et ON et.id=p.event_id WHERE $2 OR (p.identity_id IS NOT NULL AND (c.owner_user_id=$1 OR EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=c.club_id AND m.user_id=$1 AND m.membership_status='active'))) OR (p.club_id IS NOT NULL AND EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=p.club_id AND m.user_id=$1 AND m.membership_status='active')) OR (p.event_id IS NOT NULL AND EXISTS (SELECT 1 FROM club_members m WHERE m.club_id=et.club_id AND m.user_id=$1 AND m.membership_status='active')) ORDER BY scope,scope_id",
         )
         .bind(user_id)
+        .bind(is_administrator)
         .fetch_all(&self.pool)
         .await
         .map(|rows| {
             rows.into_iter()
-                .map(|row| ActivityVisibility { id: row.0, user_id: row.1, scope: row.2, scope_id: row.3, visibility: row.4, updated_at: row.5 })
+                .map(|row| ActivityVisibility { id: row.0, scope: row.1, scope_id: row.2, visibility: row.3, updated_by_user_id: row.4, can_edit: row.5, updated_at: row.6 })
                 .collect()
         })
     }
@@ -743,18 +812,30 @@ impl Store {
         user_id: Uuid,
         input: &ActivityVisibilityInput,
     ) -> Result<ActivityVisibility, sqlx::Error> {
+        let identity_id = (input.scope == "identity").then_some(input.scope_id);
+        let club_id = (input.scope == "club").then_some(input.scope_id);
+        let event_id = (input.scope == "event").then_some(input.scope_id);
         let id = Uuid::new_v4();
-        sqlx::query_as::<_, (Uuid, Uuid, String, Option<Uuid>, String, DateTime<Utc>)>(
-            "INSERT INTO activity_visibility_policies (id,user_id,scope,scope_id,visibility) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (user_id,scope,(COALESCE(scope_id,'00000000-0000-0000-0000-000000000000'::uuid))) DO UPDATE SET visibility=excluded.visibility,updated_at=now() RETURNING id,user_id,scope,scope_id,visibility,updated_at",
-        )
+        sqlx::query("INSERT INTO activity_visibility_policies (id,identity_id,club_id,event_id,visibility,updated_by_user_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING")
         .bind(id)
-        .bind(user_id)
-        .bind(input.scope.trim())
-        .bind(input.scope_id)
+        .bind(identity_id)
+        .bind(club_id)
+        .bind(event_id)
         .bind(input.visibility.trim())
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query_as::<_, (Uuid, String, Uuid, String, Uuid, DateTime<Utc>)>(
+            "UPDATE activity_visibility_policies SET visibility=$1,updated_by_user_id=$2,updated_at=now() WHERE ($3::uuid IS NOT NULL AND identity_id=$3) OR ($4::uuid IS NOT NULL AND club_id=$4) OR ($5::uuid IS NOT NULL AND event_id=$5) RETURNING id,CASE WHEN identity_id IS NOT NULL THEN 'identity' WHEN club_id IS NOT NULL THEN 'club' ELSE 'event' END AS scope,COALESCE(identity_id,club_id,event_id) AS scope_id,visibility,updated_by_user_id,updated_at",
+        )
+        .bind(input.visibility.trim())
+        .bind(user_id)
+        .bind(identity_id)
+        .bind(club_id)
+        .bind(event_id)
         .fetch_one(&self.pool)
         .await
-        .map(|row| ActivityVisibility { id: row.0, user_id: row.1, scope: row.2, scope_id: row.3, visibility: row.4, updated_at: row.5 })
+        .map(|row| ActivityVisibility { id: row.0, scope: row.1, scope_id: row.2, visibility: row.3, updated_by_user_id: row.4, can_edit: true, updated_at: row.5 })
     }
 
     pub async fn update_member_password_hash(
@@ -987,6 +1068,130 @@ impl Store {
         Ok(())
     }
 
+    pub async fn create_device_authorization_grant(
+        &self,
+        input: &DeviceAuthorizationGrantInput<'_>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "WITH expired AS (DELETE FROM device_authorization_grants WHERE expires_at <= now())
+             INSERT INTO device_authorization_grants
+                (id,client_id,device_name,client_version,device_code_hash,user_code_hash,expires_at,interval_seconds)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        )
+        .bind(input.id)
+        .bind(input.client_id.trim())
+        .bind(input.device_name.trim())
+        .bind(input.client_version.trim())
+        .bind(input.device_code_hash)
+        .bind(input.user_code_hash)
+        .bind(input.expires_at)
+        .bind(input.interval_seconds)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn device_authorization_for_user_code(
+        &self,
+        user_code_hash: &[u8],
+    ) -> Result<Option<DeviceAuthorizationApprovalRecord>, sqlx::Error> {
+        sqlx::query_as::<_, (String, String, String, DateTime<Utc>)>(
+            "SELECT device_name,client_id,client_version,expires_at
+             FROM device_authorization_grants
+             WHERE user_code_hash=$1 AND status='pending' AND expires_at > now()",
+        )
+        .bind(user_code_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| {
+            row.map(|(device_name, client_id, client_version, expires_at)| {
+                DeviceAuthorizationApprovalRecord {
+                    device_name,
+                    client_id,
+                    client_version,
+                    expires_at,
+                }
+            })
+        })
+    }
+
+    pub async fn decide_device_authorization(
+        &self,
+        user_id: Uuid,
+        user_code_hash: &[u8],
+        approved: bool,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(sqlx::query(
+            "UPDATE device_authorization_grants
+             SET status=CASE WHEN $3 THEN 'approved' ELSE 'denied' END,
+                 user_id=CASE WHEN $3 THEN $1 ELSE NULL END,
+                 approved_at=CASE WHEN $3 THEN now() ELSE NULL END
+             WHERE user_code_hash=$2 AND status='pending' AND expires_at > now()",
+        )
+        .bind(user_id)
+        .bind(user_code_hash)
+        .bind(approved)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
+    pub async fn device_authorization_status(
+        &self,
+        device_code_hash: &[u8],
+        client_id: &str,
+    ) -> Result<Option<(String, DateTime<Utc>, i32)>, sqlx::Error> {
+        sqlx::query_as::<_, (String, DateTime<Utc>, i32)>(
+            "SELECT status,expires_at,interval_seconds
+             FROM device_authorization_grants
+             WHERE device_code_hash=$1 AND client_id=$2",
+        )
+        .bind(device_code_hash)
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn issue_device_token_from_authorization(
+        &self,
+        device_code_hash: &[u8],
+        client_id: &str,
+        token_id: Uuid,
+        token_hash: &[u8],
+        token_expires_at: DateTime<Utc>,
+        scopes: &Value,
+    ) -> Result<Option<(Uuid, String)>, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let Some((user_id, device_name)) = sqlx::query_as::<_, (Uuid, String)>(
+            "UPDATE device_authorization_grants
+             SET status='consumed', consumed_at=now()
+             WHERE device_code_hash=$1 AND client_id=$2 AND status='approved' AND expires_at > now()
+             RETURNING user_id,device_name",
+        )
+        .bind(device_code_hash)
+        .bind(client_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            return Ok(None);
+        };
+        sqlx::query(
+            "INSERT INTO device_tokens (id,user_id,device_name,token_hash,expires_at,scopes)
+             VALUES ($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(token_id)
+        .bind(user_id)
+        .bind(device_name.trim())
+        .bind(token_hash)
+        .bind(token_expires_at)
+        .bind(scopes)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(Some((user_id, device_name)))
+    }
+
     pub async fn device_tokens(
         &self,
         user_id: Uuid,
@@ -1088,8 +1293,8 @@ impl Store {
     }
 
     pub async fn clubs(&self, viewer_id: Uuid, is_admin: bool) -> Result<Vec<Club>, sqlx::Error> {
-        sqlx::query_as::<_, (Uuid, String, Option<String>, String, i64, i64, Option<String>, Option<String>, bool)>(
-            "SELECT c.id,c.name,c.callsign,c.description,count(cm.user_id),count(cm.user_id) FILTER (WHERE cm.membership_status='active' AND (cm.dues_status IN ('due','overdue') OR cm.renewal_due_on <= current_date + 30)),mine.role,(SELECT status FROM club_join_requests r WHERE r.club_id=c.id AND r.user_id=$1 ORDER BY requested_at DESC LIMIT 1),($2 OR mine.role IN ('owner','coordinator')) FROM clubs c LEFT JOIN club_members cm ON cm.club_id=c.id LEFT JOIN club_members mine ON mine.club_id=c.id AND mine.user_id=$1 GROUP BY c.id,mine.role ORDER BY c.name",
+        sqlx::query_as::<_, (Uuid, String, Option<String>, String, i64, i64, Option<String>, Option<String>, Option<String>, bool)>(
+            "SELECT c.id,c.name,c.callsign,c.description,count(cm.user_id),count(cm.user_id) FILTER (WHERE cm.membership_status='active' AND (cm.dues_status IN ('due','overdue') OR cm.renewal_due_on <= current_date + 30)),mine.role,mine.membership_status,(SELECT status FROM club_join_requests r WHERE r.club_id=c.id AND r.user_id=$1 ORDER BY requested_at DESC LIMIT 1),COALESCE($2 OR (mine.role IN ('owner','coordinator') AND mine.membership_status='active'), false) FROM clubs c LEFT JOIN club_members cm ON cm.club_id=c.id LEFT JOIN club_members mine ON mine.club_id=c.id AND mine.user_id=$1 GROUP BY c.id,mine.role,mine.membership_status ORDER BY c.name",
         )
         .bind(viewer_id)
         .bind(is_admin)
@@ -1105,8 +1310,9 @@ impl Store {
                     member_count: r.4,
                     renewal_attention_count: r.5,
                     my_role: r.6,
-                    join_request_status: r.7,
-                    can_manage: r.8,
+                    my_membership_status: r.7,
+                    join_request_status: r.8,
+                    can_manage: r.9,
                 })
                 .collect()
         })
@@ -1158,6 +1364,7 @@ impl Store {
             member_count: 1,
             renewal_attention_count: 0,
             my_role: Some("owner".to_owned()),
+            my_membership_status: Some("active".to_owned()),
             join_request_status: None,
             can_manage: true,
         }))
@@ -1614,6 +1821,28 @@ impl Store {
         .map(|rows| rows.into_iter().map(|row| DiagnosticReport { id: row.0, user_id: row.1, operator_callsign: row.2, instance_id: row.3, category: row.4, summary: row.5, payload: row.6, created_at: row.7 }).collect())
     }
 
+    pub async fn diagnostic_reports_for_user(
+        &self,
+        user_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<DiagnosticReport>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String, String, Value, DateTime<Utc>)>(
+            "SELECT d.id,d.user_id,u.callsign,d.instance_id,d.category,d.summary,d.payload,d.created_at FROM diagnostic_reports d JOIN users u ON u.id=d.user_id WHERE d.user_id=$1 ORDER BY d.created_at DESC LIMIT $2",
+        )
+        .bind(user_id)
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().map(|row| DiagnosticReport { id: row.0, user_id: row.1, operator_callsign: row.2, instance_id: row.3, category: row.4, summary: row.5, payload: row.6, created_at: row.7 }).collect())
+    }
+
+    pub async fn purge_diagnostic_reports(&self) -> Result<u64, sqlx::Error> {
+        Ok(sqlx::query("DELETE FROM diagnostic_reports")
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
     pub async fn upsert_station_presence(
         &self,
         user_id: Uuid,
@@ -1635,13 +1864,102 @@ impl Store {
         is_administrator: bool,
         limit: i64,
     ) -> Result<Vec<QsoLog>, sqlx::Error> {
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, COALESCE(q.operator_callsign,u.callsign) AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='contest' AND p.scope_id=q.event_id LIMIT 1) contest_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='club' AND p.scope_id=e.club_id LIMIT 1) club_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.user_id=q.user_id AND p.scope='overall' AND p.scope_id IS NULL LIMIT 1) overall_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='global' OR (q.event_id IS NOT NULL AND COALESCE(contest_policy.visibility,club_policy.visibility,overall_policy.visibility)='members' AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=e.club_id AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3")
+        let query = qso_log_query(
+            "FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id LEFT JOIN managed_callsigns identity ON identity.id=q.callsign_id LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.event_id=q.event_id LIMIT 1) event_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.identity_id=q.callsign_id LIMIT 1) identity_policy ON true LEFT JOIN LATERAL (SELECT p.visibility FROM activity_visibility_policies p WHERE p.club_id=COALESCE(identity.club_id,e.club_id) LIMIT 1) club_policy ON true WHERE $1 OR q.user_id=$2 OR COALESCE(event_policy.visibility,identity_policy.visibility,club_policy.visibility)='global' OR (COALESCE(event_policy.visibility,identity_policy.visibility,club_policy.visibility)='members' AND COALESCE(identity.club_id,e.club_id) IS NOT NULL AND EXISTS (SELECT 1 FROM club_members cm WHERE cm.user_id=$2 AND cm.club_id=COALESCE(identity.club_id,e.club_id) AND cm.membership_status='active')) ORDER BY q.occurred_at DESC LIMIT $3",
+        );
+        sqlx::query_as::<_, QsoLogRow>(&query)
             .bind(is_administrator)
             .bind(viewer_id)
             .bind(limit.clamp(1, 1000))
             .fetch_all(&self.pool)
             .await
             .map(|rows| rows.into_iter().map(QsoLog::from).collect())
+    }
+
+    pub async fn activity_map_points(
+        &self,
+        viewer_id: Uuid,
+        is_administrator: bool,
+        scope: &str,
+        scope_id: Option<Uuid>,
+    ) -> Result<Vec<ActivityMapPoint>, sqlx::Error> {
+        let mut logs = self
+            .qso_logs_for_viewer(viewer_id, is_administrator, 1_000)
+            .await?;
+        let identities = self
+            .managed_callsigns()
+            .await?
+            .into_iter()
+            .map(|identity| (identity.id, (identity.club_id, identity.owner_user_id)))
+            .collect::<HashMap<_, _>>();
+        let events = self.events().await?;
+        match scope {
+            "overall" => logs.retain(|log| {
+                log.callsign_id
+                    .and_then(|identity_id| identities.get(&identity_id))
+                    .is_some_and(|(_, owner_user_id)| *owner_user_id == Some(viewer_id))
+            }),
+            "identity" => {
+                let identity_id = scope_id.ok_or_else(|| {
+                    sqlx::Error::Protocol("identity map scope requires a target".into())
+                })?;
+                logs.retain(|log| log.callsign_id == Some(identity_id));
+            }
+            "club" => {
+                let club_id = scope_id.ok_or_else(|| {
+                    sqlx::Error::Protocol("club map scope requires a target".into())
+                })?;
+                let event_ids = events
+                    .iter()
+                    .filter(|event| event.club_id == club_id)
+                    .map(|event| event.id)
+                    .collect::<std::collections::HashSet<_>>();
+                logs.retain(|log| {
+                    log.event_id
+                        .is_some_and(|event_id| event_ids.contains(&event_id))
+                        || log
+                            .callsign_id
+                            .and_then(|identity_id| identities.get(&identity_id))
+                            .and_then(|(identity_club_id, _)| *identity_club_id)
+                            .is_some_and(|identity_club_id| identity_club_id == club_id)
+                });
+            }
+            "event" => {
+                let event_id = scope_id.ok_or_else(|| {
+                    sqlx::Error::Protocol("event map scope requires a target".into())
+                })?;
+                logs.retain(|log| log.event_id == Some(event_id));
+            }
+            _ => unreachable!("map scope is validated by the API"),
+        }
+        let mut points = HashMap::<String, ActivityMapPoint>::new();
+        for log in logs {
+            let grid = grid_from_exchange(&log.exchange);
+            let Some(grid) = grid.and_then(maidenhead_center) else {
+                continue;
+            };
+            points
+                .entry(grid.0.clone())
+                .and_modify(|point| {
+                    point.qso_count += 1;
+                    point.last_qso_at = point.last_qso_at.max(log.occurred_at);
+                })
+                .or_insert(ActivityMapPoint {
+                    grid: grid.0,
+                    latitude: grid.1,
+                    longitude: grid.2,
+                    qso_count: 1,
+                    last_qso_at: log.occurred_at,
+                });
+        }
+        let mut points = points.into_values().collect::<Vec<_>>();
+        points.sort_by(|left, right| {
+            right
+                .qso_count
+                .cmp(&left.qso_count)
+                .then_with(|| right.last_qso_at.cmp(&left.last_qso_at))
+        });
+        Ok(points)
     }
 
     pub async fn create_qso_log(
@@ -1652,7 +1970,10 @@ impl Store {
         // Retries are expected when a native client reconnects. Resolve the
         // existing record before inserting so a successful retry is a normal
         // success response rather than a unique-constraint error.
-        if let Some(existing) = sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, COALESCE(q.operator_callsign,u.callsign) AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
+        let existing_query = qso_log_query(
+            "FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2",
+        );
+        if let Some(existing) = sqlx::query_as::<_, QsoLogRow>(&existing_query)
             .bind(user_id)
             .bind(input.idempotency_key)
             .fetch_optional(&self.pool)
@@ -1661,14 +1982,24 @@ impl Store {
             return Ok(existing.into());
         }
         let id = Uuid::new_v4();
-        let insert = sqlx::query("INSERT INTO qso_logs (id,user_id,event_id,operating_callsign,callsign_id,visibility,visibility_club_id,idempotency_key,callsign,band,mode,frequency_hz,occurred_at,rst_sent,rst_received,exchange,points,source) VALUES ($1,$2,$3,$4,$5,'private',NULL,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (user_id,idempotency_key) DO NOTHING")
+        let insert = sqlx::query("INSERT INTO qso_logs (id,user_id,event_id,operating_callsign,callsign_id,idempotency_key,callsign,band,mode,frequency_hz,occurred_at,rst_sent,rst_received,exchange,points,source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (user_id,idempotency_key) DO NOTHING")
             .bind(id).bind(user_id).bind(input.event_id).bind(input.operating_callsign.as_deref().map(str::trim).map(str::to_ascii_uppercase)).bind(input.callsign_id).bind(input.idempotency_key).bind(input.callsign.trim().to_ascii_uppercase()).bind(input.band.trim()).bind(input.mode.trim().to_ascii_uppercase()).bind(input.frequency_hz).bind(input.occurred_at).bind(input.rst_sent.as_deref()).bind(input.rst_received.as_deref()).bind(&input.exchange).bind(input.points).bind(input.source.trim()).execute(&self.pool).await?;
         if insert.rows_affected() == 0 {
-            return sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, COALESCE(q.operator_callsign,u.callsign) AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.user_id=$1 AND q.idempotency_key=$2")
-                .bind(user_id).bind(input.idempotency_key).fetch_one(&self.pool).await.map(Into::into);
+            return sqlx::query_as::<_, QsoLogRow>(&existing_query)
+                .bind(user_id)
+                .bind(input.idempotency_key)
+                .fetch_one(&self.pool)
+                .await
+                .map(Into::into);
         }
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, COALESCE(q.operator_callsign,u.callsign) AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1")
-            .bind(id).fetch_one(&self.pool).await.map(QsoLog::from)
+        let inserted_query = qso_log_query(
+            "FROM qso_logs q JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE q.id=$1",
+        );
+        sqlx::query_as::<_, QsoLogRow>(&inserted_query)
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .map(QsoLog::from)
     }
 
     pub async fn qso_log_owner(&self, log_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
@@ -1724,7 +2055,10 @@ impl Store {
     }
 
     pub async fn shared_qso_log(&self, token_hash: &[u8]) -> Result<Option<QsoLog>, sqlx::Error> {
-        sqlx::query_as::<_, QsoLogRow>("SELECT q.id, q.user_id, COALESCE(q.operator_callsign,u.callsign) AS operator_callsign, q.operating_callsign, q.callsign_id, q.contest_template_id, q.contest_definition_version, q.contest_config, q.is_duplicate, q.multipliers, q.scoring_version, q.scoring_explanation, q.event_id, e.name AS event_name, q.visibility, q.visibility_club_id, q.idempotency_key, q.callsign, q.band, q.mode, q.frequency_hz, q.occurred_at, q.rst_sent, q.rst_received, q.exchange, q.points, q.source FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()")
+        let query = qso_log_query(
+            "FROM qso_share_links s JOIN qso_logs q ON q.id=s.qso_log_id JOIN users u ON u.id=q.user_id LEFT JOIN events e ON e.id=q.event_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()",
+        );
+        sqlx::query_as::<_, QsoLogRow>(&query)
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await
@@ -1816,12 +2150,28 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::should_preserve_last_administrator;
+    use super::{grid_from_exchange, maidenhead_center, should_preserve_last_administrator};
 
     #[test]
     fn protects_the_last_administrator_only_when_downgrading_one() {
         assert!(should_preserve_last_administrator(1, true));
         assert!(!should_preserve_last_administrator(2, true));
         assert!(!should_preserve_last_administrator(1, false));
+    }
+
+    #[test]
+    fn maidenhead_grid_centres_are_validated_and_stable() {
+        let (grid, latitude, longitude) =
+            maidenhead_center("cn87").expect("valid four-character grid");
+        assert_eq!(grid, "CN87");
+        assert!((latitude - 47.5).abs() < f64::EPSILON);
+        assert!((longitude + 123.0).abs() < f64::EPSILON);
+        assert!(maidenhead_center("CN87XX").is_some());
+        assert!(maidenhead_center("not-a-grid").is_none());
+        assert!(maidenhead_center("CN8").is_none());
+        assert_eq!(
+            grid_from_exchange(&serde_json::json!({"fields_received":{"grid":"FN42"}})),
+            Some("FN42")
+        );
     }
 }

@@ -5,6 +5,7 @@ use crate::{
         validate_display_name, validate_identity, validate_password,
     },
     error::{HttpError, HttpResult},
+    log_validation::{canonicalize_contest_exchange, validate_log},
 };
 use axum::{
     Json,
@@ -15,13 +16,13 @@ use axum_extra::extract::cookie::CookieJar;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration as ChronoDuration, Utc};
 use qsonaut_protocol::{
-    ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage, Club, ClubInput,
-    ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput, ContestTemplate,
-    CurrentUser, DiagnosticReport, Event, EventInput, EventParticipant, EventParticipantInput,
-    EventScore, EventStatusInput, EventUpdateInput, ManagedCallsign, ManagedCallsignInput,
-    ManagedCallsignStatusInput, MemberDetail, MemberInput, MemberUpdateInput, PasswordResetInput,
-    QsoLog, QsoLogInput, ShareLink, ShareLinkInput, ShareLinkRecord, SharedQsoDetail,
-    StationPresence, StationPresenceInput,
+    ActivityMapPoint, ActivitySummary, ActivityVisibility, ActivityVisibilityInput, ChannelMessage,
+    Club, ClubInput, ClubJoinDecisionInput, ClubJoinRequest, ClubMembership, ClubMembershipInput,
+    ContestTemplate, CurrentUser, DiagnosticReport, Event, EventInput, EventParticipant,
+    EventParticipantInput, EventScore, EventStatusInput, EventUpdateInput, ManagedCallsign,
+    ManagedCallsignInput, ManagedCallsignStatusInput, MemberDetail, MemberInput, MemberUpdateInput,
+    PasswordResetInput, QsoLog, QsoLogInput, ShareLink, ShareLinkInput, ShareLinkRecord,
+    SharedQsoDetail, StationPresence, StationPresenceInput,
 };
 use rand::RngCore;
 use uuid::Uuid;
@@ -349,7 +350,7 @@ pub(crate) async fn events(
             .clubs(user.id, false)
             .await?
             .into_iter()
-            .filter(|club| club.my_role.is_some())
+            .filter(|club| club.my_membership_status.as_deref() == Some("active"))
             .map(|club| club.id)
             .collect::<std::collections::HashSet<_>>();
         events.retain(|event| club_ids.contains(&event.club_id));
@@ -691,8 +692,13 @@ pub(crate) async fn stations(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<StationPresence>>> {
-    require_admin(&state, &jar).await?;
-    Ok(Json(state.store.station_presence(None).await?))
+    let user = require_user(&state, &jar).await?;
+    let scope = if user.global_role == "administrator" {
+        None
+    } else {
+        Some(user.id)
+    };
+    Ok(Json(state.store.station_presence(scope).await?))
 }
 
 #[utoipa::path(put, path = "/api/v1/stations/presence", tag = "activity", request_body = StationPresenceInput, responses((status = 200, body = StationPresence)))]
@@ -806,6 +812,94 @@ pub(crate) async fn activity_summary(
     ))
 }
 
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub(crate) struct ActivityMapQuery {
+    #[serde(default = "default_summary_scope")]
+    pub scope: String,
+    pub scope_id: Option<Uuid>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/activity/map",
+    tag = "activity",
+    params(ActivityMapQuery),
+    responses((status = 200, body = [ActivityMapPoint]), (status = 400), (status = 403))
+)]
+pub(crate) async fn activity_map(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<ActivityMapQuery>,
+) -> HttpResult<Json<Vec<ActivityMapPoint>>> {
+    let user = require_user(&state, &jar).await?;
+    if !["overall", "identity", "club", "event"].contains(&query.scope.as_str()) {
+        return Err(HttpError::bad_request(
+            "map scope must be overall, identity, club, or event",
+        ));
+    }
+    if query.scope == "overall" && query.scope_id.is_some() {
+        return Err(HttpError::bad_request(
+            "overall map scope cannot have a target",
+        ));
+    }
+    if query.scope != "overall" && query.scope_id.is_none() {
+        return Err(HttpError::bad_request("this map scope requires an id"));
+    }
+    if query.scope == "identity" {
+        let identity_id = query.scope_id.expect("validated above");
+        let identity = state
+            .store
+            .managed_callsign(identity_id)
+            .await?
+            .ok_or_else(HttpError::not_found)?;
+        let identity_member = if let Some(club_id) = identity.club_id {
+            state.store.active_club_member(user.id, club_id).await?
+        } else {
+            false
+        };
+        if user.global_role != "administrator"
+            && identity.owner_user_id != Some(user.id)
+            && !identity_member
+        {
+            return Err(HttpError::forbidden());
+        }
+    }
+    if query.scope == "club" {
+        let club_id = query
+            .scope_id
+            .ok_or_else(|| HttpError::bad_request("club map scope requires a club"))?;
+        if user.global_role != "administrator"
+            && !state.store.active_club_member(user.id, club_id).await?
+        {
+            return Err(HttpError::forbidden());
+        }
+    }
+    if query.scope == "event" {
+        let event_id = query.scope_id.expect("validated above");
+        let club_id = state
+            .store
+            .event_club_id(event_id)
+            .await?
+            .ok_or_else(HttpError::not_found)?;
+        if user.global_role != "administrator"
+            && !state.store.active_club_member(user.id, club_id).await?
+        {
+            return Err(HttpError::forbidden());
+        }
+    }
+    Ok(Json(
+        state
+            .store
+            .activity_map_points(
+                user.id,
+                user.global_role == "administrator",
+                &query.scope,
+                query.scope_id,
+            )
+            .await?,
+    ))
+}
+
 #[utoipa::path(get, path = "/api/v1/activity/visibility", tag = "activity", responses((status = 200, body = [ActivityVisibility])))]
 pub(crate) async fn activity_visibility(
     State(state): State<AppState>,
@@ -813,7 +907,10 @@ pub(crate) async fn activity_visibility(
 ) -> HttpResult<Json<Vec<ActivityVisibility>>> {
     let user = require_user(&state, &jar).await?;
     Ok(Json(
-        state.store.activity_visibility_policies(user.id).await?,
+        state
+            .store
+            .activity_visibility_policies(user.id, user.global_role == "administrator")
+            .await?,
     ))
 }
 
@@ -824,38 +921,46 @@ pub(crate) async fn set_activity_visibility(
     Json(input): Json<ActivityVisibilityInput>,
 ) -> HttpResult<Json<ActivityVisibility>> {
     let user = require_user(&state, &jar).await?;
-    if !["overall", "club", "contest"].contains(&input.scope.as_str()) {
+    if !["identity", "club", "event"].contains(&input.scope.as_str()) {
         return Err(HttpError::bad_request("invalid activity visibility scope"));
     }
     if !["private", "members", "global"].contains(&input.visibility.as_str()) {
         return Err(HttpError::bad_request("invalid activity visibility"));
     }
     match input.scope.as_str() {
-        "overall" if input.scope_id.is_some() => {
-            return Err(HttpError::bad_request(
-                "overall visibility cannot have a target",
-            ));
-        }
-        "club" => {
-            let club_id = input
-                .scope_id
-                .ok_or_else(|| HttpError::bad_request("club visibility requires a club"))?;
-            if !state.store.active_club_member(user.id, club_id).await? {
-                return Err(HttpError::forbidden());
+        "identity" => {
+            let identity_id = input.scope_id;
+            let identity = state
+                .store
+                .managed_callsign(identity_id)
+                .await?
+                .ok_or_else(HttpError::not_found)?;
+            if identity.identity_type == "personal" {
+                if identity.owner_user_id != Some(user.id) && user.global_role != "administrator" {
+                    return Err(HttpError::forbidden());
+                }
+                if input.visibility == "members" {
+                    return Err(HttpError::bad_request(
+                        "personal callsigns support only private or global activity",
+                    ));
+                }
+            } else {
+                let club_id = identity.club_id.ok_or_else(HttpError::not_found)?;
+                require_club_manager(&state, &user, club_id).await?;
             }
         }
-        "contest" => {
-            let event_id = input
-                .scope_id
-                .ok_or_else(|| HttpError::bad_request("contest visibility requires a contest"))?;
+        "club" => {
+            let club_id = input.scope_id;
+            require_club_manager(&state, &user, club_id).await?;
+        }
+        "event" => {
+            let event_id = input.scope_id;
             let club_id = state
                 .store
                 .event_club_id(event_id)
                 .await?
                 .ok_or_else(HttpError::not_found)?;
-            if !state.store.active_club_member(user.id, club_id).await? {
-                return Err(HttpError::forbidden());
-            }
+            require_club_manager(&state, &user, club_id).await?;
         }
         _ => {}
     }
@@ -869,18 +974,27 @@ pub(crate) async fn diagnostics(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> HttpResult<Json<Vec<qsonaut_protocol::DiagnosticReport>>> {
-    let user = require_admin(&state, &jar).await?;
-    state
-        .store
-        .record_audit_event(
-            Some(user.id),
-            "diagnostics_inspected",
-            "diagnostic_reports",
-            None,
-            &serde_json::json!({"limit": 500}),
-        )
-        .await?;
-    Ok(Json(state.store.diagnostic_reports(500).await?))
+    let user = require_user(&state, &jar).await?;
+    if user.global_role == "administrator" {
+        state
+            .store
+            .record_audit_event(
+                Some(user.id),
+                "diagnostics_inspected",
+                "diagnostic_reports",
+                None,
+                &serde_json::json!({"limit": 500}),
+            )
+            .await?;
+        Ok(Json(state.store.diagnostic_reports(500).await?))
+    } else {
+        Ok(Json(
+            state
+                .store
+                .diagnostic_reports_for_user(user.id, 100)
+                .await?,
+        ))
+    }
 }
 
 #[utoipa::path(get, path = "/api/v1/diagnostics/export", tag = "activity", responses((status = 200, body = [DiagnosticReport]), (status = 403)))]
@@ -901,6 +1015,26 @@ pub(crate) async fn export_diagnostics(
         )
         .await?;
     Ok(Json(reports))
+}
+
+#[utoipa::path(delete, path = "/api/v1/diagnostics", tag = "activity", responses((status = 204, description = "All submitted diagnostic reports permanently removed"), (status = 403)))]
+pub(crate) async fn purge_diagnostics(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> HttpResult<StatusCode> {
+    let user = require_admin(&state, &jar).await?;
+    let deleted = state.store.purge_diagnostic_reports().await?;
+    state
+        .store
+        .record_audit_event(
+            Some(user.id),
+            "diagnostics_purged",
+            "diagnostic_reports",
+            None,
+            &serde_json::json!({"deleted": deleted}),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(post, path = "/api/v1/diagnostics/retention/purge", tag = "activity", responses((status = 204, description = "Expired diagnostics and share artifacts removed"), (status = 403)))]
@@ -936,28 +1070,11 @@ pub(crate) async fn channel_messages(
 pub(crate) async fn collect_log(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(input): Json<QsoLogInput>,
+    Json(mut input): Json<QsoLogInput>,
 ) -> HttpResult<Json<QsoLog>> {
     let user = require_user(&state, &jar).await?;
-    validate_callsign(&input.callsign)?;
-    if input.band.trim().is_empty() || input.mode.trim().is_empty() {
-        return Err(HttpError::bad_request(
-            "callsign, band, and mode are required",
-        ));
-    }
-    if input.frequency_hz.is_some_and(|frequency| frequency < 0) {
-        return Err(HttpError::bad_request("frequency cannot be negative"));
-    }
-    if !input.exchange.is_object() || input.exchange.to_string().len() > 8_192 {
-        return Err(HttpError::bad_request(
-            "exchange must be an object no larger than 8 KiB",
-        ));
-    }
-    if input.source.trim().is_empty() || input.source.len() > 40 {
-        return Err(HttpError::bad_request(
-            "log source must contain 1 to 40 characters",
-        ));
-    }
+    validate_log(&input).map_err(HttpError::bad_request)?;
+    canonicalize_contest_exchange(&mut input.exchange);
     Ok(Json(state.store.create_qso_log(user.id, &input).await?))
 }
 

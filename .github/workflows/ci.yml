@@ -9,6 +9,22 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: qsonaut
+          POSTGRES_USER: qsonaut
+          POSTGRES_PASSWORD: qsonaut-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qsonaut -d qsonaut"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      QSONAUT_TEST_DATABASE_URL: postgresql://qsonaut:qsonaut-ci-password@127.0.0.1:5432/qsonaut
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -17,6 +33,17 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Install coverage tooling
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate Rust coverage report
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+      - name: Print Rust coverage summary
+        run: cargo llvm-cov report --summary-only --fail-under-regions 57.98 --fail-under-lines 53.87 --fail-under-functions 51.48
+      - name: Upload Rust coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: qsonaut-server-rust-coverage
+          path: lcov.info
 
   web:
     runs-on: ubuntu-latest
@@ -32,6 +59,11 @@ jobs:
       - run: npm run check
         working-directory: web
       - run: npm run build
+        working-directory: web
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:e2e
         working-directory: web
 
   migrations:

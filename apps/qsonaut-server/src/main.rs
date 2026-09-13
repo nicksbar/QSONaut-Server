@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     let fallback = web_root.join("200.html");
 
     let app = qsonaut_api::router_with_store(store, secure_cookies)
+        .route_service("/link", ServeFile::new(web_root.join("link.html")))
         .fallback_service(ServeDir::new(&web_root).not_found_service(ServeFile::new(fallback)))
         .layer(TraceLayer::new_for_http());
 

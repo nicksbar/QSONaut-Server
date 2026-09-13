@@ -31,3 +31,18 @@ linked current rules when a sponsor changes an event.
 Built-in rows are maintained by the server and refreshed on startup. A future
 custom-template API should store user definitions separately and must not
 overwrite reserved built-in contest keys.
+
+## Planned activity geography
+
+Contest definitions may eventually advertise optional geographic checkoff
+dimensions such as Maidenhead grids, U.S. states, counties, or sponsor-defined
+regions. These dimensions belong in the Activity workspace as opt-in overlays,
+not as a permanently enabled global map feature.
+
+The policy owner controls enablement for the relevant activity scope: an
+operator for personal identities, and the organization or event owner for
+club and event activity. Overlay progress must use only QSO records already
+visible to the requesting operator, so enabling a checklist never broadens
+log visibility. The community edition should provide basic bundled-boundary
+checkoffs; richer region definitions, participant aggregation, validation,
+progress history, and exports remain hosted capabilities.

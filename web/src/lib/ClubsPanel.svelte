@@ -3,18 +3,22 @@
   import type { Club, ClubJoinRequest, ClubMember, ServerCapabilities, User } from './types';
 
   let { clubs, capabilities, currentUser, refresh }: { clubs: Club[]; capabilities: ServerCapabilities; currentUser: User | null; refresh: () => Promise<void> } = $props();
-  let name = $state(''); let callsign = $state(''); let description = $state(''); let search = $state('');
+  let name = $state(''); let callsign = $state(''); let description = $state(''); let search = $state(''); let directoryMode = $state<'featured' | 'all'>('featured');
   let editingId = $state<string | null>(null); let editName = $state(''); let editCallsign = $state(''); let editDescription = $state('');
   let selectedClubId = $state<string | null>(null); let roster = $state<ClubMember[]>([]); let requests = $state<ClubJoinRequest[]>([]); let rosterSearch = $state('');
   let working = $state(false); let error = $state(''); let notice = $state('');
-  let visibleClubs = $derived(clubs.filter((club) => {
+  let visibleClubs = $derived.by(() => {
     const query = search.trim().toLowerCase();
-    return !query || `${club.name} ${club.callsign || ''} ${club.description}`.toLowerCase().includes(query);
-  }));
+    const matches = clubs.filter((club) => !club.my_role && !club.join_request_status && (!query || `${club.name} ${club.callsign || ''} ${club.description}`.toLowerCase().includes(query)));
+    return !query && directoryMode === 'featured'
+      ? matches.sort((left, right) => right.member_count - left.member_count || left.name.localeCompare(right.name)).slice(0, 12)
+      : matches;
+  });
   let visibleRoster = $derived(roster.filter((member) => {
     const query = rosterSearch.trim().toLowerCase();
     return !query || `${member.callsign} ${member.display_name} ${member.membership_number || ''}`.toLowerCase().includes(query);
   }));
+  let pendingClubs = $derived(clubs.filter((club) => club.join_request_status === 'pending'));
 
   async function createClub() {
     working = true; error = ''; notice = '';
@@ -55,6 +59,15 @@
     } catch (cause) { error = (cause as Error).message; }
   }
 
+  async function openClub(club: Club) {
+    await loadClub(club);
+    if (club.can_manage) {
+      requestAnimationFrame(() => document.querySelector('.club-console')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    } else {
+      requestAnimationFrame(() => document.querySelector(`[data-club-id="${club.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    }
+  }
+
   async function review(request: ClubJoinRequest, decision: 'approve' | 'reject') {
     working = true; error = ''; notice = '';
     try {
@@ -83,15 +96,16 @@
 </script>
 
 <section>
-  <div class="section-head"><div><p class="eyebrow">SHARED ACTIVITY SETUP</p><h2>Clubs</h2></div><b>{clubs.length} clubs</b></div>
-  <p class="section-intro">Create and discover shared activity spaces, maintain club identity, and connect operators. Board governance, elections, voting cycles, and commercial controls belong to hosted organizational extensions.</p>
+  <div class="section-head"><div><p class="eyebrow">ORGANIZATION DISCOVERY</p><h2>Find and request organizations</h2></div><b>{clubs.length} organizations</b></div>
+  <p class="section-intro">Your active organizations live in the sidebar. This page is for finding another organization and requesting membership; organizations you already belong to are deliberately excluded here.</p>
   {#if error}<p class="error banner">{error}</p>{/if}{#if notice}<p class="notice banner">{notice}</p>{/if}
+  {#if pendingClubs.length}<section class="pending-requests" aria-label="Pending organization requests"><p class="eyebrow">PENDING REQUESTS</p>{#each pendingClubs as club}<p><b>{club.name}</b> · request pending review</p>{/each}</section>{/if}
   <div class="club-layout">
     <div>
-      <div class="list-tools"><input aria-label="Search clubs" placeholder="Search clubs or callsigns" bind:value={search} /><small>{visibleClubs.length} of {clubs.length} clubs</small></div>
-      {#if clubs.length === 0}<p class="empty">No clubs yet. Register the first shared activity space.</p>{:else if visibleClubs.length === 0}<p class="empty">No clubs match the current search.</p>{/if}
+      <div class="list-heading"><div><h3>Discover organizations</h3><small>{directoryMode === 'featured' && !search ? 'Popular organizations, not a full server listing' : `${visibleClubs.length} matching organizations`}</small></div><button class="secondary" onclick={() => directoryMode = directoryMode === 'featured' ? 'all' : 'featured'}>{directoryMode === 'featured' ? 'BROWSE ALL' : 'SHOW FEATURED'}</button></div><div class="list-tools"><input aria-label="Search organizations" placeholder="Search organizations or callsigns" bind:value={search} /></div>
+      {#if clubs.length === 0}<p class="empty">No organizations yet. Register the first shared activity space.</p>{:else if visibleClubs.length === 0}<p class="empty">{search ? 'No organizations match the current search.' : 'No other organizations are available to discover.'}</p>{/if}
       {#each visibleClubs as club}
-        <article class="record club-record">
+        <article class="record club-record" data-club-id={club.id}>
           {#if editingId === club.id}
             <form class="edit-form" onsubmit={(event) => { event.preventDefault(); void saveEdit(club.id); }}>
               <label>Name<input maxlength="120" bind:value={editName} required /></label>
@@ -104,7 +118,8 @@
             <p>{club.description || 'No description yet.'}</p>
             <div class="actions">
               {#if club.my_role}<span class="pill">{club.my_role}</span>{/if}
-              {#if club.can_manage}<button onclick={() => beginEdit(club)}>EDIT CLUB</button><button onclick={() => void loadClub(club)}>MANAGE ROSTER</button>{/if}
+              <button class="secondary" onclick={() => void openClub(club)}>{club.can_manage ? 'OPEN MANAGEMENT' : club.my_role ? 'OPEN MEMBERSHIP' : 'VIEW ORGANIZATION'}</button>
+              {#if club.can_manage}<button onclick={() => beginEdit(club)}>EDIT ORGANIZATION</button>{/if}
               {#if club.join_request_status === 'pending'}<span class="pill">REQUEST PENDING</span>
               {:else if !club.my_role}<button disabled={working} onclick={() => requestJoin(club)}>REQUEST TO JOIN</button>{/if}
             </div>
@@ -113,12 +128,12 @@
   {/each}
     </div>
     <form onsubmit={(event) => { event.preventDefault(); void createClub(); }}>
-      <p class="eyebrow">NEW CLUB</p><h3>Register activity space</h3>
-      <p class="form-help">The public community edition supports up to {capabilities.max_clubs ?? 'unlimited'} clubs. Hosted organizational features can expand management.</p>
+      <p class="eyebrow">NEW ORGANIZATION</p><h3>Register activity space</h3>
+      <p class="form-help">The public community edition supports up to {capabilities.max_clubs ?? 'unlimited'} organizations. Hosted organizational features can expand management.</p>
       <label>Name<input maxlength="120" bind:value={name} required /></label>
       <label>Club callsign<input maxlength="16" bind:value={callsign} /></label>
       <label>Description<textarea maxlength="1000" bind:value={description}></textarea></label>
-      <button disabled={working || (capabilities.max_clubs !== null && clubs.length >= capabilities.max_clubs)}>{working ? 'CREATING…' : 'CREATE CLUB'}</button>
+      <button disabled={working || (capabilities.max_clubs !== null && clubs.length >= capabilities.max_clubs)}>{working ? 'CREATING…' : 'CREATE ORGANIZATION'}</button>
     </form>
   </div>
   {#if selectedClubId && clubs.find((club) => club.id === selectedClubId)?.can_manage}
@@ -148,6 +163,8 @@
   .eyebrow { color:var(--cyan); font-size:.72rem; letter-spacing:.12em; margin:0 0 4px; }
   .section-intro, .form-help, .boundary-note { color:var(--muted); }
   .club-layout { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(260px,1fr); gap:18px; }
+  .pending-requests { border-left:2px solid var(--amber); padding:12px 16px; background:color-mix(in srgb,var(--amber) 7%,var(--panel)); }.pending-requests p { margin:4px 0; color:var(--muted); }
+  .list-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }.list-heading h3 { margin:0; }.list-heading small { color:var(--muted); }
   .list-tools, .actions { display:flex; gap:8px; align-items:center; }
   .list-tools { margin-bottom:10px; }
   .list-tools input { flex:1; }
